@@ -8,20 +8,11 @@ CREATE TABLE IF NOT EXISTS `#__translations_queue` (
   `content_id` int unsigned NOT NULL,
   `source_language` char(7) NOT NULL DEFAULT 'en-GB',
   `target_language` char(7) NOT NULL,
-  `source_text` mediumtext NOT NULL,
   `source_hash` varchar(64) NOT NULL DEFAULT '',
-  `translated_text` mediumtext,
-  `machine_text` mediumtext,
   `status` varchar(20) NOT NULL DEFAULT 'pending',
   `priority` smallint NOT NULL DEFAULT 0,
   `associated_article_id` int unsigned DEFAULT NULL,
   `params` text,
-  `checked_out` int unsigned DEFAULT NULL,
-  `checked_out_time` datetime DEFAULT NULL,
-  `created` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `created_by` int unsigned NOT NULL DEFAULT 0,
-  `modified` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  `modified_by` int unsigned NOT NULL DEFAULT 0,
   PRIMARY KEY (`id`),
   KEY `idx_status` (`status`),
   KEY `idx_content` (`content_type`, `content_id`),
@@ -45,13 +36,11 @@ CREATE TABLE IF NOT EXISTS `#__translations_feedback` (
   `context_tags` varchar(500) NOT NULL DEFAULT '',
   `reviewer_id` int unsigned NOT NULL,
   `status` varchar(20) NOT NULL DEFAULT 'pending',
-  `source_type` varchar(20) NOT NULL DEFAULT 'human',
   `created` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   KEY `idx_status` (`status`),
   KEY `idx_language` (`target_language`),
-  KEY `idx_reviewer` (`reviewer_id`),
-  KEY `idx_source_type` (`source_type`)
+  KEY `idx_reviewer` (`reviewer_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 DEFAULT COLLATE=utf8mb4_unicode_ci;
 
 --
@@ -61,7 +50,6 @@ CREATE TABLE IF NOT EXISTS `#__translations_feedback` (
 CREATE TABLE IF NOT EXISTS `#__translations_rules` (
   `id` int unsigned NOT NULL AUTO_INCREMENT,
   `title` varchar(255) NOT NULL DEFAULT '',
-  `alias` varchar(400) NOT NULL DEFAULT '',
   `rule_type` varchar(20) NOT NULL,
   `target_language` char(7) NOT NULL,
   `rule_text` text NOT NULL,
