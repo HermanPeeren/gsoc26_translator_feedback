@@ -23,7 +23,7 @@ use Joomla\Component\Translations\Administrator\Model\QueueModel;
 /**
  * View class for a list of translation queue items.
  *
- * @since  1.0.0
+ * @since  0.1.0
  */
 class HtmlView extends BaseHtmlView
 {
@@ -31,7 +31,7 @@ class HtmlView extends BaseHtmlView
      * An array of items.
      *
      * @var    array
-     * @since  1.0.0
+     * @since  0.1.0
      */
     public $items;
 
@@ -39,7 +39,7 @@ class HtmlView extends BaseHtmlView
      * The pagination object.
      *
      * @var    \Joomla\CMS\Pagination\Pagination
-     * @since  1.0.0
+     * @since  0.1.0
      */
     public $pagination;
 
@@ -47,7 +47,7 @@ class HtmlView extends BaseHtmlView
      * The model state.
      *
      * @var    \Joomla\Registry\Registry
-     * @since  1.0.0
+     * @since  0.1.0
      */
     public $state;
 
@@ -55,7 +55,7 @@ class HtmlView extends BaseHtmlView
      * Form object for search filters.
      *
      * @var    \Joomla\CMS\Form\Form
-     * @since  1.0.0
+     * @since  0.1.0
      */
     public $filterForm;
 
@@ -63,7 +63,7 @@ class HtmlView extends BaseHtmlView
      * The active search filters.
      *
      * @var    array
-     * @since  1.0.0
+     * @since  0.1.0
      */
     public $activeFilters;
 
@@ -71,7 +71,7 @@ class HtmlView extends BaseHtmlView
      * Target-language columns for the grid, keyed by lang_code.
      *
      * @var    object[]
-     * @since  1.0.0
+     * @since  0.1.0
      */
     public $targetLanguages = [];
 
@@ -82,7 +82,7 @@ class HtmlView extends BaseHtmlView
      *
      * @return  void
      *
-     * @since   1.0.0
+     * @since   0.1.0
      */
     public function display($tpl = null): void
     {
@@ -106,7 +106,7 @@ class HtmlView extends BaseHtmlView
      *
      * @return  void
      *
-     * @since   1.0.0
+     * @since   0.1.0
      */
     protected function addToolbar(): void
     {

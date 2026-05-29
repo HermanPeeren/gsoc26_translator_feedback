@@ -22,7 +22,7 @@ use Joomla\CMS\Form\Field\ContentlanguageField;
  * "All" ('*') language. Mirrors QueueModel::getTargetLanguages()
  * so the queue filter columns stay in sync.
  *
- * @since  1.0.0
+ * @since  0.1.0
  */
 class TargetlanguageField extends ContentlanguageField
 {
@@ -30,7 +30,7 @@ class TargetlanguageField extends ContentlanguageField
      * The form field type.
      *
      * @var    string
-     * @since  1.0.0
+     * @since  0.1.0
      */
     public $type = 'TargetLanguage';
 
@@ -39,7 +39,7 @@ class TargetlanguageField extends ContentlanguageField
      *
      * @return  object[]  The options the field is going to show.
      *
-     * @since   1.0.0
+     * @since   0.1.0
      */
     protected function getOptions()
     {

@@ -26,7 +26,7 @@ use Joomla\Database\ParameterType;
  * getItems() then attaches each article's per language translation state
  * map via a single follow-up query.
  *
- * @since  1.0.0
+ * @since  0.1.0
  */
 class QueueModel extends ListModel
 {
@@ -34,7 +34,7 @@ class QueueModel extends ListModel
      * Content type this queue handles (articles only, for now).
      *
      * @var    string
-     * @since  1.0.0
+     * @since  0.1.0
      */
     private const CONTENT_TYPE = 'com_content.article'; // for now
 
@@ -44,7 +44,7 @@ class QueueModel extends ListModel
      * @param   array                     $config   An optional associative array of configuration settings.
      * @param   MVCFactoryInterface|null  $factory  The factory.
      *
-     * @since   1.0.0
+     * @since   0.1.0
      */
     public function __construct($config = [], ?MVCFactoryInterface $factory = null)
     {
@@ -68,7 +68,7 @@ class QueueModel extends ListModel
      *
      * @return  void
      *
-     * @since   1.0.0
+     * @since   0.1.0
      */
     protected function populateState($ordering = 'a.title', $direction = 'ASC')
     {
@@ -98,7 +98,7 @@ class QueueModel extends ListModel
      *
      * @return  array  Selected values (empty = no filter).
      *
-     * @since   1.0.0
+     * @since   0.1.0
      */
     private function getMultiFilterState(string $name, ?array $submittedFilter): array
     {
@@ -120,7 +120,7 @@ class QueueModel extends ListModel
      *
      * @return  string  A store id.
      *
-     * @since   1.0.0
+     * @since   0.1.0
      */
     protected function getStoreId($id = '')
     {
@@ -136,7 +136,7 @@ class QueueModel extends ListModel
      *
      * @return  \Joomla\Database\QueryInterface
      *
-     * @since   1.0.0
+     * @since   0.1.0
      */
     protected function getListQuery()
     {
@@ -234,7 +234,7 @@ class QueueModel extends ListModel
      *
      * @return  object[]  Keyed by lang_code (lang_code, title).
      *
-     * @since   1.0.0
+     * @since   0.1.0
      */
     public function getTargetLanguages(): array
     {
@@ -271,7 +271,7 @@ class QueueModel extends ListModel
      *
      * @return  object[]  Articles with ->states[langCode] => status map.
      *
-     * @since   1.0.0
+     * @since   0.1.0
      */
     public function getItems()
     {
@@ -322,7 +322,7 @@ class QueueModel extends ListModel
      *
      * @return  object[]  Articles with ->states map attached.
      *
-     * @since   1.0.0
+     * @since   0.1.0
      */
     protected static function applyStates(array $items, array $rows): array
     {
