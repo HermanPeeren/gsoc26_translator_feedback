@@ -24,7 +24,7 @@ use Joomla\DI\ServiceProviderInterface;
 /**
  * The translations service provider.
  *
- * @since  1.0.0
+ * @since  0.1.0
  */
 return new class () implements ServiceProviderInterface {
     /**
@@ -34,7 +34,7 @@ return new class () implements ServiceProviderInterface {
      *
      * @return  void
      *
-     * @since   1.0.0
+     * @since   0.1.0
      */
     public function register(Container $container)
     {
