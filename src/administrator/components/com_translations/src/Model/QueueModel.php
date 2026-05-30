@@ -140,10 +140,10 @@ class QueueModel extends ListModel
      */
     protected function getListQuery()
     {
-        $db     = $this->getDatabase();
-        $query  = $db->getQuery(true);
-        $source = 'en-GB';
-        $ctype  = self::CONTENT_TYPE;
+        $db             = $this->getDatabase();
+        $query          = $db->getQuery(true);
+        $sourceLanguage = 'en-GB';
+        $contentType    = self::CONTENT_TYPE;
 
         $query->select(
             [
@@ -154,9 +154,9 @@ class QueueModel extends ListModel
             ]
         )
             ->from($db->quoteName('#__content', 'a'))
-            ->where($db->quoteName('a.language') . ' = :source')
+            ->where($db->quoteName('a.language') . ' = :sourceLanguage')
             ->where($db->quoteName('a.state') . ' <> -2')
-            ->bind(':source', $source);
+            ->bind(':sourceLanguage', $sourceLanguage);
 
         // Filter - search on article title(title LIKE), or "id:<n>" for direct lookup.
         $search = $this->getState('filter.search');
@@ -173,46 +173,55 @@ class QueueModel extends ListModel
             }
         }
 
-        // Filter - state (multi-select): show articles with a cell in ANY of the chosen states.
-        // "__none__" = fully untranslated (no queue row for the article); real statuses match via EXISTS.
-        // The two are combined with OR.
+        // Filter - state (multi-select). The dropdown mixes two different kinds of value:
+        //   - real states (pending / translating / review / approved / published), stored in translation_state;
+        //   - '__none__', which is NOT stored anywhere, it is a UI-only flag for "no translation yet",
+        //     meaning the article has no state row at all.
+        // Because '__none__' is the absence of a row, it needs the opposite SQL (NOT EXISTS) from the real
+        // states (EXISTS over an IN list). So we split the picks into the two cases and OR them back together.
         $statuses = array_values(
             array_filter((array) $this->getState('filter.status'), static fn($s) => $s !== '')
         );
 
         if (!empty($statuses)) {
             $conditions   = [];
+            // $wantNone     - did the user tick "No translation yet"? (the '__none__' flag)
+            // $realStatuses - the genuine states only, with '__none__' stripped out, ready for an IN (...) list.
             $wantNone     = \in_array('__none__', $statuses, true);
             $realStatuses = array_values(array_filter($statuses, static fn($s) => $s !== '__none__'));
 
             if ($wantNone) {
+                // "No translation yet": the article has NO queue/state rows at all, so NOT EXISTS is the test.
+                // Correlated to the current grid row by content_id = a.id (content_type keeps it to articles).
+                // The state JOIN isn't strictly needed here, but it mirrors subReal so the two read the same.
                 $subNone = $db->getQuery(true)
                     ->select('1')
-                    ->from($db->quoteName('#__translations_queue', 'qn'))
+                    ->from($db->quoteName('#__translations_queue', 'queue'))
                     ->innerJoin(
-                        $db->quoteName('#__translations_queue_states', 'sn')
-                        . ' ON ' . $db->quoteName('sn.queue_id') . ' = ' . $db->quoteName('qn.id')
+                        $db->quoteName('#__translations_queue_states', 'queueState')
+                        . ' ON ' . $db->quoteName('queueState.queue_id') . ' = ' . $db->quoteName('queue.id')
                     )
-                    ->where($db->quoteName('qn.content_id') . ' = ' . $db->quoteName('a.id'))
-                    ->where($db->quoteName('qn.content_type') . ' = ' . $db->quote($ctype));
+                    ->where($db->quoteName('queue.content_id') . ' = ' . $db->quoteName('a.id'))
+                    ->where($db->quoteName('queue.content_type') . ' = ' . $db->quote($contentType));
                 $conditions[] = 'NOT EXISTS (' . $subNone . ')';
             }
 
             if (!empty($realStatuses)) {
-                // Bind on the main query so the placeholders resolve once the
-                // subquery is embedded as a string.
+                // Real states: the article has AT LEAST ONE language whose state is in the picked list, so EXISTS.
+                // bindArray binds on the OUTER $query, not this subquery: the subquery is embedded into the main
+                // query as a string, so placeholders bound on it would be lost - binding on $query resolves them.
                 $placeholders = $query->bindArray($realStatuses, ParameterType::STRING);
 
                 $subReal = $db->getQuery(true)
                     ->select('1')
-                    ->from($db->quoteName('#__translations_queue', 'qs'))
+                    ->from($db->quoteName('#__translations_queue', 'queue'))
                     ->innerJoin(
-                        $db->quoteName('#__translations_queue_states', 'ss')
-                        . ' ON ' . $db->quoteName('ss.queue_id') . ' = ' . $db->quoteName('qs.id')
+                        $db->quoteName('#__translations_queue_states', 'queueState')
+                        . ' ON ' . $db->quoteName('queueState.queue_id') . ' = ' . $db->quoteName('queue.id')
                     )
-                    ->where($db->quoteName('qs.content_id') . ' = ' . $db->quoteName('a.id'))
-                    ->where($db->quoteName('qs.content_type') . ' = ' . $db->quote($ctype))
-                    ->where($db->quoteName('ss.translation_state') . ' IN (' . implode(',', $placeholders) . ')');
+                    ->where($db->quoteName('queue.content_id') . ' = ' . $db->quoteName('a.id'))
+                    ->where($db->quoteName('queue.content_type') . ' = ' . $db->quote($contentType))
+                    ->where($db->quoteName('queueState.translation_state') . ' IN (' . implode(',', $placeholders) . ')');
                 $conditions[] = 'EXISTS (' . $subReal . ')';
             }
 
@@ -287,25 +296,25 @@ class QueueModel extends ListModel
             $ids[] = (int) $item->id;
         }
 
-        $db    = $this->getDatabase();
-        $ctype = self::CONTENT_TYPE;
-        $query = $db->getQuery(true)
+        $db          = $this->getDatabase();
+        $contentType = self::CONTENT_TYPE;
+        $query       = $db->getQuery(true)
             ->select(
                 [
-                    $db->quoteName('q.content_id'),
-                    $db->quoteName('s.target_language'),
-                    $db->quoteName('s.translation_state', 'status'),
+                    $db->quoteName('queue.content_id'),
+                    $db->quoteName('queueState.target_language'),
+                    $db->quoteName('queueState.translation_state', 'status'),
                 ]
             )
-            ->from($db->quoteName('#__translations_queue', 'q'))
+            ->from($db->quoteName('#__translations_queue', 'queue'))
             ->innerJoin(
-                $db->quoteName('#__translations_queue_states', 's')
-                . ' ON ' . $db->quoteName('s.queue_id') . ' = ' . $db->quoteName('q.id')
+                $db->quoteName('#__translations_queue_states', 'queueState')
+                . ' ON ' . $db->quoteName('queueState.queue_id') . ' = ' . $db->quoteName('queue.id')
             )
-            ->where($db->quoteName('q.content_type') . ' = :ctype')
-            ->whereIn($db->quoteName('q.content_id'), $ids, ParameterType::INTEGER)
-            ->bind(':ctype', $ctype)
-            ->order($db->quoteName('s.id') . ' ASC');
+            ->where($db->quoteName('queue.content_type') . ' = :contentType')
+            ->whereIn($db->quoteName('queue.content_id'), $ids, ParameterType::INTEGER)
+            ->bind(':contentType', $contentType)
+            ->order($db->quoteName('queueState.id') . ' ASC');
 
         $db->setQuery($query);
         $rows = $db->loadObjectList() ?: [];
