@@ -14,6 +14,7 @@ namespace Joomla\Component\Translations\Administrator\Model;
 \defined('_JEXEC') or die;
 // phpcs:enable PSR1.Files.SideEffects
 
+use Joomla\CMS\Component\ComponentHelper;
 use Joomla\CMS\Factory;
 use Joomla\CMS\MVC\Factory\MVCFactoryInterface;
 use Joomla\CMS\MVC\Model\ListModel;
@@ -87,6 +88,11 @@ class QueueModel extends ListModel
         $this->setState('filter.status', $this->getMultiFilterState('status', $submittedFilter));
         $this->setState('filter.languages', $this->getMultiFilterState('languages', $submittedFilter));
 
+        // Source language: the content language originals are authored in (queue rows).
+        // Configurable in config.xml, defaults to en-GB.
+        $params = ComponentHelper::getParams('com_translations');
+        $this->setState('source_language', (string) $params->get('source_language', 'en-GB'));
+
         parent::populateState($ordering, $direction);
     }
 
@@ -142,7 +148,7 @@ class QueueModel extends ListModel
     {
         $db             = $this->getDatabase();
         $query          = $db->getQuery(true);
-        $sourceLanguage = 'en-GB';
+        $sourceLanguage = (string) $this->getState('source_language', 'en-GB');
         $contentType    = self::CONTENT_TYPE;
 
         $query->select(
@@ -247,9 +253,9 @@ class QueueModel extends ListModel
      */
     public function getTargetLanguages(): array
     {
-        $db     = $this->getDatabase();
-        $query  = $db->getQuery(true);
-        $source = 'en-GB';
+        $db             = $this->getDatabase();
+        $query          = $db->getQuery(true);
+        $sourceLanguage = (string) $this->getState('source_language', 'en-GB');
 
         $query->select(
             [
@@ -260,8 +266,8 @@ class QueueModel extends ListModel
             ->from($db->quoteName('#__languages'))
             ->where($db->quoteName('published') . ' = 1')
             ->where($db->quoteName('lang_code') . ' <> ' . $db->quote('*'))
-            ->where($db->quoteName('lang_code') . ' <> :source')
-            ->bind(':source', $source)
+            ->where($db->quoteName('lang_code') . ' <> :sourceLanguage')
+            ->bind(':sourceLanguage', $sourceLanguage)
             ->order($db->quoteName('ordering') . ' ASC');
 
         $selected = array_values(array_filter((array) $this->getState('filter.languages')));
@@ -273,6 +279,29 @@ class QueueModel extends ListModel
         $db->setQuery($query);
 
         return $db->loadObjectList('lang_code');
+    }
+
+    /**
+     * Display title of the configured source language, e.g. "English (en-GB)".
+     *
+     * @return  string  The #__languages title, or the raw language code as a fallback.
+     *
+     * @since   0.1.0
+     */
+    public function getSourceLanguageTitle(): string
+    {
+        $sourceLanguage = (string) $this->getState('source_language', 'en-GB');
+
+        $db    = $this->getDatabase();
+        $query = $db->getQuery(true)
+            ->select($db->quoteName('title'))
+            ->from($db->quoteName('#__languages'))
+            ->where($db->quoteName('lang_code') . ' = :sourceLanguage')
+            ->bind(':sourceLanguage', $sourceLanguage);
+
+        $db->setQuery($query);
+
+        return (string) ($db->loadResult() ?: $sourceLanguage);
     }
 
     /**

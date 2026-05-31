@@ -76,6 +76,14 @@ class HtmlView extends BaseHtmlView
     public $targetLanguages = [];
 
     /**
+     * Display title of the source language, shown as the source-article column heading.
+     *
+     * @var    string
+     * @since  0.1.0
+     */
+    public $sourceLanguageTitle = '';
+
+    /**
      * Display the view.
      *
      * @param   string|null  $tpl  The name of the template file to parse.
@@ -89,12 +97,13 @@ class HtmlView extends BaseHtmlView
         /** @var QueueModel $model */
         $model = $this->getModel();
 
-        $this->items           = $model->getItems();
-        $this->pagination      = $model->getPagination();
-        $this->state           = $model->getState();
-        $this->filterForm      = $model->getFilterForm();
-        $this->activeFilters   = $model->getActiveFilters();
-        $this->targetLanguages = $model->getTargetLanguages();
+        $this->items               = $model->getItems();
+        $this->pagination          = $model->getPagination();
+        $this->state               = $model->getState();
+        $this->filterForm          = $model->getFilterForm();
+        $this->activeFilters       = $model->getActiveFilters();
+        $this->targetLanguages     = $model->getTargetLanguages();
+        $this->sourceLanguageTitle = $model->getSourceLanguageTitle();
 
         $this->addToolbar();
 

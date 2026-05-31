@@ -2,5 +2,12 @@
 <config>
 	<inlinehelp button="show"/>
 	<fieldset name="component" label="COM_TRANSLATIONS_OPTIONS">
+		<field
+			name="source_language"
+			type="contentlanguage"
+			label="COM_TRANSLATIONS_CONFIG_SOURCE_LANGUAGE_LABEL"
+			description="COM_TRANSLATIONS_CONFIG_SOURCE_LANGUAGE_DESC"
+			default="en-GB"
+		/>
 	</fieldset>
 </config>
