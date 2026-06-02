@@ -9,5 +9,11 @@
 			description="COM_TRANSLATIONS_CONFIG_SOURCE_LANGUAGE_DESC"
 			default="en-GB"
 		/>
+		<field
+			name="source_language_warning"
+			type="note"
+			description="COM_TRANSLATIONS_CONFIG_SOURCE_LANGUAGE_WARNING"
+			class="alert alert-warning"
+		/>
 	</fieldset>
 </config>
