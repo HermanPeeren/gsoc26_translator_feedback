@@ -8,7 +8,7 @@
 	<packager>Joomla! Project</packager>
 	<packagerurl>https://github.com/joomla-projects/gsoc26_translator_feedback</packagerurl>
 	<license>GNU General Public License version 2 or later; see LICENSE.txt</license>
-	<version>1.0.0</version>
+	<version>1.0.1</version>
 	<description>PKG_TRANSLATIONS_XML_DESCRIPTION</description>
 	<files>
 		<!-- The id of each extension is the element Joomla stores it under -->
@@ -22,4 +22,9 @@
 	<languages folder="language">
 		<language tag="en-GB">en-GB/pkg_translations.sys.ini</language>
 	</languages>
+	<!-- Where an installed site asks whether there is a newer version. The file is generated
+	     by build/update-xml.php; a site remembers this URL, so it is not moved. -->
+	<updateservers>
+		<server type="extension" name="Translator Feedback" priority="1">https://raw.githubusercontent.com/joomla-projects/gsoc26_translator_feedback/main/updates/pkg_translations.xml</server>
+	</updateservers>
 </extension>

@@ -11,3 +11,4 @@ This GSoC 2026 project uses translator feedback to improve automatic domain spec
 * [Glossary](docs/glossary.md) - the vocabulary this project uses in a narrow sense.
 * [Content type map](docs/contenttypes.md) - the keys that describe a translatable content type.
 * [Writing a translation plugin](docs/translation-plugin.md) - adding support for another provider.
+* [Development](docs/development.md) - building the downloads, running the tests, releasing.
