@@ -1,5 +1,6 @@
-# Builds
-/build
+# Builds - the script in build/ is part of the repository, what it produces is not
+/build/*.zip
+/build/tmp
 /releases
 
 # OSX
@@ -35,13 +36,15 @@ composer.phar
 /vendor
 composer.lock
 
+# phpunit
+.phpunit.result.cache
+
 #cypress / npm
 /node_modules
 package-lock.json
-/tests/cypress/output/screenshots
-!/tests/cypress/output/screenshots/.gitkeep
-/tests/cypress/output/videos
-!/tests/cypress/output/videos/.gitkeep
+# Cypress empties these before every run - a .gitkeep placed in them does not survive one -
+# and it creates them again when it needs them, so the whole folder is output.
+/tests/cypress/output
 cypress.config.js
 /joomla
 
