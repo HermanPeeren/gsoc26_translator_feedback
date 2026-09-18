@@ -223,6 +223,13 @@ class DistillerModel extends BaseDatabaseModel
             $before = trim(implode('', \array_slice($oldWords, $oldStart, $oldEnd - $oldStart)));
             $after  = trim(implode('', \array_slice($newWords, $newStart, $newEnd - $newStart)));
 
+            // A token carries the whitespace after it, so re-wrapping a line changes the tokens
+            // without changing a word. What is left once that whitespace is trimmed is the same
+            // text on both sides, and there is no rule to be learned from it.
+            if ($before === $after) {
+                continue;
+            }
+
             if ($before === '') {
                 $spans[] = '[added] ' . $after;
             } elseif ($after === '') {

@@ -10,6 +10,29 @@
     "friendsofphp/php-cs-fixer": "^3.87.1",
     "squizlabs/php_codesniffer": "^3.13.4",
     "phpstan/phpstan": "^2.1.22",
-    "phpstan/phpstan-deprecation-rules": "^2.0.3"
+    "phpstan/phpstan-deprecation-rules": "^2.0.3",
+    "joomla/registry": "^4.0",
+    "joomla/event": "^4.0",
+    "jfcherng/php-sequence-matcher": "^4.0"
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "Joomla\\Component\\Translations\\Administrator\\": "src/administrator/components/com_translations/src/",
+      "Joomla\\Plugin\\Content\\Translations\\": "src/plugins/content/translations/src/",
+      "Joomla\\Plugin\\Rag\\Claude\\": "src/plugins/rag/claude/src/",
+      "Joomla\\Plugin\\Task\\TranslationsDistiller\\": "src/plugins/task/translationsdistiller/src/",
+      "Joomla\\Plugin\\Task\\TranslationsSeed\\": "src/plugins/task/translationsseed/src/",
+      "Joomla\\Plugin\\Task\\TranslationsTranslate\\": "src/plugins/task/translationstranslate/src/",
+      "Joomla\\Plugin\\Translation\\Claude\\": "src/plugins/translation/claude/src/"
+    }
+  },
+  "scripts": {
+    "test": "phpunit",
+    "build": [
+      "php build/build.php",
+      "php build/build.php seed"
+    ],
+    "update-xml": "php build/update-xml.php",
+    "analyse": "phpstan analyse"
   }
 }
