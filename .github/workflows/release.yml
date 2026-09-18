@@ -1,0 +1,69 @@
+name: Release
+
+# Pushing a tag is the whole release procedure. PhpStorm can create and push a tag from
+# the Git menu, so nothing here needs a terminal.
+#
+# The tag names the release; the version the archives carry comes from the manifests, and
+# the first step below refuses a tag that disagrees with the package manifest. Bumping a
+# version is therefore one line in pkg_translations.xml, committed, and then tagged.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # The build writes zip archives and the suite runs on the PHP the package requires.
+      # The runner's own PHP is neither pinned nor guaranteed to carry the zip extension.
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: zip
+          coverage: none
+
+      - name: The tag must match the package manifest
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          MANIFEST=$(php -r 'echo trim((string) simplexml_load_file("src/administrator/manifests/packages/pkg_translations.xml")->version);')
+          SEED=$(php -r 'echo trim((string) simplexml_load_file("src/plugins/task/translationsseed/translationsseed.xml")->version);')
+          echo "tag: $TAG   package: $MANIFEST   seed plugin: $SEED"
+          if [ "$TAG" != "$MANIFEST" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match the package version $MANIFEST. Bump src/administrator/manifests/packages/pkg_translations.xml, or tag the version it already carries."
+            exit 1
+          fi
+          if [ "$SEED" != "$MANIFEST" ]; then
+            echo "::notice::The seed plugin is released at $SEED, which is not the package version. That is allowed - it is a separate download - but check it is what you meant."
+          fi
+
+      # The dev dependencies are what the suite runs on: PHPUnit, and the three framework
+      # packages Joomla itself ships that the tested classes use.
+      - name: Install dependencies
+        run: composer install --no-interaction --no-progress --prefer-dist
+
+      # The suite needs no database, no site and no network, so there is no reason not to
+      # gate a release on it.
+      - name: Unit tests
+        run: vendor/bin/phpunit
+
+      - name: Build the package and the seed plugin
+        run: |
+          php build/build.php
+          php build/build.php seed
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            build/pkg_translations-*.zip \
+            build/plg_task_translationsseed-*.zip \
+            --title "Translator Feedback $GITHUB_REF_NAME" \
+            --generate-notes
