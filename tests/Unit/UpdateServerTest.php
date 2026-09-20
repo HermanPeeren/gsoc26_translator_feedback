@@ -147,8 +147,8 @@ final class UpdateServerTest extends TestCase
     /**
      * The update file names the extension the way Joomla stores it.
      *
-     * Joomla matches an update against an installed extension on the element, the type and,
-     * for a plugin, its group. Get one wrong and the update is simply never offered.
+     * Joomla matches an update against an installed extension on the element, the type, the
+     * client and, for a plugin, its group. Get one wrong and the update is simply never offered.
      *
      * @return  void
      *
@@ -160,12 +160,14 @@ final class UpdateServerTest extends TestCase
 
         $this->assertSame('pkg_translations', trim((string) $package->element));
         $this->assertSame('package', trim((string) $package->type));
+        $this->assertSame('site', trim((string) $package->client), 'A package is installed as a site extension');
 
         $seed = simplexml_load_file(self::path('updates/plg_task_translationsseed.xml'))->update;
 
         $this->assertSame('translationsseed', trim((string) $seed->element), 'A plugin is stored under its element');
         $this->assertSame('plugin', trim((string) $seed->type));
         $this->assertSame('task', trim((string) $seed->folder), 'and its group');
+        $this->assertSame('site', trim((string) $seed->client), 'and a plugin is a site extension too');
     }
 
     /**
