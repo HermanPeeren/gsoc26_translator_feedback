@@ -92,6 +92,8 @@ if (!is_dir($directory) && !mkdir($directory, 0755, true) && !is_dir($directory)
     exit(1);
 }
 
+// A package and a plugin install as site extensions, and an update that does not say so is taken
+// for administrator and matches nothing.
 foreach ($updates as $file => $update) {
     $folder = $update['folder'] === null
         ? ''
@@ -106,7 +108,8 @@ foreach ($updates as $file => $update) {
         <description>%2$s</description>
         <element>%3$s</element>
         <type>%4$s</type>
-%5$s        <version>%6$s</version>
+%5$s        <client>site</client>
+        <version>%6$s</version>
         <infourl title="Translator Feedback">%7$s</infourl>
         <downloads>
             <downloadurl type="full" format="zip">%7$s/releases/download/%8$s/%9$s</downloadurl>
