@@ -98,7 +98,10 @@ final class TranslationsDistiller extends CMSPlugin implements SubscriberInterfa
         try {
             $processed = $model->distill($batchSize);
         } catch (\Throwable $e) {
-            $this->logTask($e->getMessage(), 'error');
+            $message = $e->getMessage();
+            $this->logTask($message, 'error');
+            $this->snapshot['output']      = $message;
+            $this->snapshot['output_body'] = $message;
 
             return Status::KNOCKOUT;
         }
