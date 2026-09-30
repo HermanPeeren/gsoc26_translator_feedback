@@ -94,13 +94,19 @@ final class TranslationsSeed extends CMSPlugin implements SubscriberInterface
 
         // This plugin is installed on its own, so the component it feeds may not be there at all.
         if (!ComponentHelper::isEnabled('com_translations')) {
-            $this->logTask($language->_('PLG_TASK_TRANSLATIONSSEED_LOG_NO_COMPONENT'), 'error');
+            $message = $language->_('PLG_TASK_TRANSLATIONSSEED_LOG_NO_COMPONENT');
+            $this->logTask($message, 'error');
+            $this->snapshot['output']      = $message;
+            $this->snapshot['output_body'] = $message;
 
             return Status::KNOCKOUT;
         }
 
         if ($targetLanguage === '') {
-            $this->logTask($language->_('PLG_TASK_TRANSLATIONSSEED_LOG_NO_LANGUAGE'), 'error');
+            $message = $language->_('PLG_TASK_TRANSLATIONSSEED_LOG_NO_LANGUAGE');
+            $this->logTask($message, 'error');
+            $this->snapshot['output']      = $message;
+            $this->snapshot['output_body'] = $message;
 
             return Status::KNOCKOUT;
         }
@@ -113,7 +119,10 @@ final class TranslationsSeed extends CMSPlugin implements SubscriberInterface
         try {
             $seeded = $seeder->seed($sourceLanguage, $targetLanguage, $batchSize, $fileNames);
         } catch (\Throwable $e) {
-            $this->logTask($e->getMessage(), 'error');
+            $message = $e->getMessage();
+            $this->logTask($message, 'error');
+            $this->snapshot['output']      = $message;
+            $this->snapshot['output_body'] = $message;
 
             return Status::KNOCKOUT;
         }
