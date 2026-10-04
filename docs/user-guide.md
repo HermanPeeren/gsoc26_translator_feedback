@@ -281,6 +281,15 @@ Both are optional. Everything they do can also be done by hand: translate from a
 and distil with the **Distil Now** button in the Rules view. How many items each run handles
 is a setting on the task, so you can keep a run short on a busy site.
 
+Every request to the provider is paid for, so a request that fails is not repeated without
+end. A feedback item whose request fails is tried again in a later run, in a request half the
+size, then on its own; after its third failed attempt it is set aside with the status `failed`
+and the last error, and no run sends it again. The attempt is counted before the request is sent, so this holds even
+when a run is cut off while it waits for the provider. A run only asks to be repeated straight
+away when it got something done; a run that only failed waits for the task's next scheduled
+time. The results of each request are saved as soon as it is answered, so a run that stops
+part-way keeps everything it finished.
+
 ## Starting from your language pack
 
 Before anyone has corrected a translation, a site's language packs already hold years of
@@ -298,16 +307,18 @@ The seed task is optional and a separate download:
 3. In **System, Manage, Scheduled Tasks**, create a **Seed Translation Rules From a Language
    Pack** task and set:
    - **Language**: the installed language to learn from.
-   - **Batch Size**: the most strings seeded in one run (50 by default). A run that finishes a
-     full batch is followed by the next one, so a whole pack is worked through over several
-     runs.
+   - **Batch Size**: the most strings seeded in one run (50 by default). A run that seeded
+     strings and leaves some for later is followed straight away by the next one, so a whole
+     pack is worked through over several runs.
    - **Language Files**: a comma separated list such as `com_content.ini`, or empty to read the
      whole pack.
 
 The task translates through the translation plugin, so that plugin must be enabled and have
 its key. A string that has been seeded is not sent again, so running the task again does not
 pay for it twice. A string the machine already translates the way the pack does writes no
-feedback, because there is nothing to learn from it.
+feedback, because there is nothing to learn from it. Like the distiller, the seed task tries a
+string that failed again in a smaller request, and sets it aside as `failed` after its third
+attempt.
 
 ## Translators working from the site
 

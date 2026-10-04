@@ -53,6 +53,8 @@ CREATE TABLE IF NOT EXISTS `#__translations_feedback` (
   `context_tags` varchar(500) NOT NULL DEFAULT '',
   `translator_id` int unsigned NOT NULL,
   `status` varchar(20) NOT NULL DEFAULT 'pending',
+  `attempts` tinyint unsigned NOT NULL DEFAULT 0,
+  `last_error` varchar(500) NOT NULL DEFAULT '',
   `created` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   KEY `idx_status` (`status`),

@@ -47,12 +47,26 @@ class DistillerController extends BaseController
         $model = $this->getModel('Distiller');
 
         try {
-            $processed = $model->distill();
+            $result = $model->distill();
 
-            if ($processed === 0) {
+            if ($result->processed > 0) {
+                $app->enqueueMessage(Text::sprintf('COM_TRANSLATIONS_DISTILL_SUCCESS', $result->processed), 'message');
+            }
+
+            if ($result->failed > 0) {
+                $app->enqueueMessage(
+                    Text::sprintf(
+                        'COM_TRANSLATIONS_DISTILL_FAILED',
+                        $result->failed,
+                        $result->quarantined,
+                        $result->lastError
+                    ),
+                    'warning'
+                );
+            }
+
+            if ($result->processed === 0 && $result->failed === 0) {
                 $app->enqueueMessage(Text::_('COM_TRANSLATIONS_DISTILL_NONE'), 'info');
-            } else {
-                $app->enqueueMessage(Text::sprintf('COM_TRANSLATIONS_DISTILL_SUCCESS', $processed), 'message');
             }
         } catch (\Throwable $e) {
             $app->enqueueMessage($e->getMessage() ?: Text::_('COM_TRANSLATIONS_DISTILL_ERROR'), 'error');

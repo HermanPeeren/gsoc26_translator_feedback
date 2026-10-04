@@ -16,6 +16,7 @@ namespace Joomla\Plugin\Task\TranslationsSeed\Extension;
 
 use Joomla\CMS\Component\ComponentHelper;
 use Joomla\CMS\Plugin\CMSPlugin;
+use Joomla\Component\Translations\Administrator\Helper\RunResult;
 use Joomla\Component\Scheduler\Administrator\Event\ExecuteTaskEvent;
 use Joomla\Component\Scheduler\Administrator\Task\Status;
 use Joomla\Component\Scheduler\Administrator\Traits\TaskPluginTrait;
@@ -117,25 +118,68 @@ final class TranslationsSeed extends CMSPlugin implements SubscriberInterface
         $seeder = new Seeder($this->getDatabase(), $this->getApplication()->getDispatcher());
 
         try {
-            $seeded = $seeder->seed($sourceLanguage, $targetLanguage, $batchSize, $fileNames);
+            $result = $seeder->seed($sourceLanguage, $targetLanguage, $batchSize, $fileNames);
         } catch (\Throwable $e) {
-            $message = $e->getMessage();
-            $this->logTask($message, 'error');
-            $this->snapshot['output']      = $message;
-            $this->snapshot['output_body'] = $message;
-
-            return Status::KNOCKOUT;
+            return $this->knockout($e->getMessage());
         }
 
-        if ($seeded === 0) {
+        if ($result->processed === 0 && $result->failed === 0) {
             $this->logTask(\sprintf($language->_('PLG_TASK_TRANSLATIONSSEED_LOG_NONE'), $targetLanguage));
 
             return Status::OK;
         }
 
-        $this->logTask(\sprintf($language->_('PLG_TASK_TRANSLATIONSSEED_LOG_SEEDED'), $seeded, $targetLanguage));
+        if ($result->processed > 0) {
+            $this->logTask(
+                \sprintf(
+                    $language->_('PLG_TASK_TRANSLATIONSSEED_LOG_SEEDED'),
+                    $result->processed,
+                    $targetLanguage,
+                    $result->remaining
+                )
+            );
+        }
 
-        // A full batch usually means the pack has more to give; resume until a run comes up short.
-        return $seeded === $batchSize ? Status::WILL_RESUME : Status::OK;
+        if ($result->failed > 0) {
+            $this->logTask(
+                \sprintf(
+                    $language->_('PLG_TASK_TRANSLATIONSSEED_LOG_FAILED'),
+                    $result->failed,
+                    $result->quarantined,
+                    $result->lastError
+                ),
+                'warning'
+            );
+        }
+
+        // Resume only after progress: a batch that fails every time must not be retried run after run.
+        switch ($result->outcome()) {
+            case RunResult::RESUME:
+                return Status::WILL_RESUME;
+
+            case RunResult::ERROR:
+                return $this->knockout($result->lastError);
+
+            default:
+                return Status::OK;
+        }
+    }
+
+    /**
+     * Log an error as the outcome of the run.
+     *
+     * @param   string  $message  The error message.
+     *
+     * @return  integer  The KNOCKOUT exit status.
+     *
+     * @since   1.1.0
+     */
+    private function knockout(string $message): int
+    {
+        $this->logTask($message, 'error');
+        $this->snapshot['output']      = $message;
+        $this->snapshot['output_body'] = $message;
+
+        return Status::KNOCKOUT;
     }
 }

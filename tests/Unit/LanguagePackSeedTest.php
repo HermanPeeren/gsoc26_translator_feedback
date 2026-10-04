@@ -170,6 +170,44 @@ final class LanguagePackSeedTest extends TestCase
     }
 
     /**
+     * Strings that failed before go first, in smaller requests: half the size on a second
+     * attempt, alone on the last.
+     *
+     * A string that keeps failing would otherwise take the strings sent with it down again on
+     * every attempt, and use up their attempts as well as its own.
+     *
+     * @return  void
+     *
+     * @since   1.1.0
+     */
+    public function testRetriedStringsGoFirstInSmallerRequests(): void
+    {
+        $pairs = [];
+
+        foreach (['A', 'B'] as $key) {
+            $pairs['administrator/com_content.ini#' . $key] = self::pair('administrator/com_content.ini', $key, $key);
+        }
+
+        for ($i = 1; $i <= 14; $i++) {
+            $pair                                          = self::pair('administrator/com_content.ini', 'SECOND_' . $i, 'S' . $i);
+            $pair['attempts']                              = 1;
+            $pairs['administrator/com_content.ini#SECOND_' . $i] = $pair;
+        }
+
+        foreach (['LAST_1', 'LAST_2'] as $key) {
+            $pair                                         = self::pair('administrator/com_content.ini', $key, $key);
+            $pair['attempts']                             = 2;
+            $pairs['administrator/com_content.ini#' . $key] = $pair;
+        }
+
+        $chunks = self::requestChunks($pairs);
+
+        $this->assertSame([1, 1, 12, 2, 2], array_map('\count', $chunks), 'Last attempts alone, second attempts by 12, then the rest');
+        $this->assertSame(['LAST_1'], array_keys($chunks[0]));
+        $this->assertSame(['A', 'B'], array_keys($chunks[4]));
+    }
+
+    /**
      * Nothing left to seed is no request at all.
      *
      * @return  void
