@@ -21,6 +21,7 @@ use Joomla\CMS\MVC\Model\BaseDatabaseModel;
 use Joomla\CMS\Plugin\PluginHelper;
 use Joomla\Component\Translations\Administrator\Event\DistilEvent;
 use Joomla\Component\Translations\Administrator\Helper\RuleRetriever;
+use Joomla\Component\Translations\Administrator\Helper\RunResult;
 use Joomla\Component\Translations\Administrator\Helper\WordNormaliser;
 use Joomla\Component\Translations\Administrator\Table\RuleTable;
 use Joomla\Database\ParameterType;
@@ -85,51 +86,86 @@ class DistillerModel extends BaseDatabaseModel
     /**
      * Distil draft rules from one batch of pending feedback.
      *
-     * Feedback is processed one target language at a time so its terminology stays coherent;
-     * each language is committed as it finishes, so a later failure does not lose earlier work.
+     * Feedback is sent one target language at a time so its terminology stays coherent. Each
+     * request is saved as soon as it is answered, so a later failure does not lose earlier work,
+     * and a row that failed before is sent in a smaller request, so it cannot hold back the rows
+     * it was batched with. A row that fails for the third time is set aside as failed.
      *
      * @param   integer  $batchSize  The most feedback rows to process in one run.
      *
-     * @return  integer  The number of feedback rows processed.
+     * @return  RunResult  What the run did, and whether it should run again.
      *
      * @throws  \RuntimeException  When no distillation provider is enabled.
      *
      * @since   0.4.0
      */
-    public function distill(int $batchSize = 10): int
+    public function distill(int $batchSize = 10): RunResult
     {
-        $feedback = $this->loadPendingFeedback($batchSize);
-
-        if ($feedback === []) {
-            return 0;
+        // Without a provider every request would fail and use up an attempt of rows that are fine.
+        if (PluginHelper::getPlugin('rag') === []) {
+            throw new \RuntimeException('No distillation provider is enabled. Enable a RAG plugin to distil rules.');
         }
 
-        $sourceLanguage = (string) ComponentHelper::getParams('com_translations')->get('source_language', 'en-GB');
-        $processed      = 0;
+        $result   = new RunResult();
+        $feedback = $this->loadPendingFeedback($batchSize);
 
-        foreach ($this->groupByLanguage($feedback) as $targetLanguage => $rows) {
-            $corrections = [];
-            $rowIds      = [];
-            $origins     = [];
+        if ($feedback !== []) {
+            $sourceLanguage = (string) ComponentHelper::getParams('com_translations')->get('source_language', 'en-GB');
 
-            foreach ($rows as $row) {
-                $feedbackId = (int) $row->id;
-                $diff       = $this->diff((string) $row->machine_draft, (string) $row->human_correction);
-
-                $rowIds[]             = $feedbackId;
-                $origins[$feedbackId] = (string) $row->source_origin;
-
-                $this->storeDiff($feedbackId, $diff);
-
-                $corrections[] = [
-                    'id'               => $feedbackId,
-                    'source_text'      => (string) $row->source_text,
-                    'machine_draft'    => (string) $row->machine_draft,
-                    'human_correction' => (string) $row->human_correction,
-                    'diff'             => $diff,
-                ];
+            foreach ($this->requestBatches($feedback, $batchSize) as $rows) {
+                $this->distilRequest($rows, $sourceLanguage, $result);
             }
+        }
 
+        $result->remaining = $this->countPendingFeedback();
+
+        return $result;
+    }
+
+    /**
+     * Send one request's worth of corrections and save what comes back.
+     *
+     * The attempt is counted before the provider is asked, so a run that is killed while it
+     * waits for an answer still uses up one of the rows' attempts. The rules and the processed
+     * mark are written in one transaction right after the answer, and no transaction is open
+     * while a provider is asked.
+     *
+     * @param   object[]   $rows            The feedback rows, all for one target language.
+     * @param   string     $sourceLanguage  The source language code.
+     * @param   RunResult  $result          The run's result, updated in place.
+     *
+     * @return  void
+     *
+     * @since   1.1.0
+     */
+    private function distilRequest(array $rows, string $sourceLanguage, RunResult $result): void
+    {
+        $targetLanguage = (string) $rows[0]->target_language;
+        $corrections    = [];
+        $rowIds         = [];
+        $origins        = [];
+
+        foreach ($rows as $row) {
+            $feedbackId = (int) $row->id;
+            $diff       = $this->diff((string) $row->machine_draft, (string) $row->human_correction);
+
+            $rowIds[]             = $feedbackId;
+            $origins[$feedbackId] = (string) $row->source_origin;
+
+            $this->storeDiff($feedbackId, $diff);
+
+            $corrections[] = [
+                'id'               => $feedbackId,
+                'source_text'      => (string) $row->source_text,
+                'machine_draft'    => (string) $row->machine_draft,
+                'human_correction' => (string) $row->human_correction,
+                'diff'             => $diff,
+            ];
+        }
+
+        $this->countAttempt($rowIds);
+
+        try {
             $candidates = $this->requestCandidates(
                 $corrections,
                 $this->contextRules($corrections, $sourceLanguage, $targetLanguage),
@@ -137,17 +173,36 @@ class DistillerModel extends BaseDatabaseModel
                 $targetLanguage
             );
 
-            $this->persistRules($candidates, $targetLanguage, $origins);
-            $this->markProcessed($rowIds);
+            // Resolved here, before the transaction, because resolving a word may ask a provider.
+            $standardForms = $this->candidateStandardForms($candidates, $sourceLanguage);
+        } catch (\Throwable $e) {
+            $this->recordFailure($rowIds, $e->getMessage(), $result);
 
-            $processed += \count($rows);
+            return;
         }
 
-        return $processed;
+        $db = $this->getDatabase();
+        $db->transactionStart();
+
+        try {
+            $this->persistRules($candidates, $targetLanguage, $origins, $standardForms);
+            $this->markProcessed($rowIds);
+            $db->transactionCommit();
+        } catch (\Throwable $e) {
+            $db->transactionRollback();
+            $this->recordFailure($rowIds, $e->getMessage(), $result);
+
+            return;
+        }
+
+        $result->processed += \count($rowIds);
     }
 
     /**
-     * Load the oldest pending feedback rows, up to the batch size.
+     * Load the pending feedback rows for one run, up to the batch size.
+     *
+     * Rows that failed before come first: a run that has any of them works only on those, so a
+     * row that keeps failing is found out without taking healthy rows down with it.
      *
      * @param   integer  $batchSize  The most rows to return.
      *
@@ -157,37 +212,193 @@ class DistillerModel extends BaseDatabaseModel
      */
     private function loadPendingFeedback(int $batchSize): array
     {
-        $status = 'pending';
-        $db     = $this->getDatabase();
-        $query  = $db->getQuery(true)
+        $retried = $this->queryPendingFeedback($batchSize, true);
+
+        return $retried !== [] ? $retried : $this->queryPendingFeedback($batchSize, false);
+    }
+
+    /**
+     * Query pending feedback rows that have, or have not, been attempted before.
+     *
+     * @param   integer  $batchSize  The most rows to return.
+     * @param   boolean  $retried    True for rows that failed before, false for untried rows.
+     *
+     * @return  object[]  The feedback rows, oldest first.
+     *
+     * @since   1.1.0
+     */
+    private function queryPendingFeedback(int $batchSize, bool $retried): array
+    {
+        $status      = 'pending';
+        $maxAttempts = RunResult::MAX_ATTEMPTS;
+        $db          = $this->getDatabase();
+        $query       = $db->getQuery(true)
             ->select('*')
             ->from($db->quoteName('#__translations_feedback'))
             ->where($db->quoteName('status') . ' = :status')
+            ->where($db->quoteName('attempts') . ' < :maxAttempts')
+            ->where($db->quoteName('attempts') . ($retried ? ' > 0' : ' = 0'))
             ->order([$db->quoteName('created') . ' ASC', $db->quoteName('id') . ' ASC'])
-            ->bind(':status', $status, ParameterType::STRING);
+            ->bind(':status', $status, ParameterType::STRING)
+            ->bind(':maxAttempts', $maxAttempts, ParameterType::INTEGER);
         $db->setQuery($query, 0, $batchSize);
 
         return $db->loadObjectList() ?: [];
     }
 
     /**
-     * Group feedback rows by their target language.
+     * Count the feedback rows still waiting to be distilled.
      *
-     * @param   object[]  $feedback  The feedback rows.
+     * @return  integer  The number of pending rows that have attempts left.
      *
-     * @return  array  Rows keyed by target language code.
-     *
-     * @since   0.4.0
+     * @since   1.1.0
      */
-    private function groupByLanguage(array $feedback): array
+    private function countPendingFeedback(): int
     {
-        $byLanguage = [];
+        $status      = 'pending';
+        $maxAttempts = RunResult::MAX_ATTEMPTS;
+        $db          = $this->getDatabase();
+        $query       = $db->getQuery(true)
+            ->select('COUNT(*)')
+            ->from($db->quoteName('#__translations_feedback'))
+            ->where($db->quoteName('status') . ' = :status')
+            ->where($db->quoteName('attempts') . ' < :maxAttempts')
+            ->bind(':status', $status, ParameterType::STRING)
+            ->bind(':maxAttempts', $maxAttempts, ParameterType::INTEGER);
+        $db->setQuery($query);
+
+        return (int) $db->loadResult();
+    }
+
+    /**
+     * Split a run's rows into requests, one target language per request.
+     *
+     * A row that failed before goes in a smaller request: half the batch size on its second
+     * attempt, alone on its last. The rows that failed most come first.
+     *
+     * @param   object[]  $feedback   The feedback rows.
+     * @param   integer   $batchSize  The size of a request of untried rows.
+     *
+     * @return  array  The requests, each a list of rows for one target language.
+     *
+     * @since   1.1.0
+     */
+    private function requestBatches(array $feedback, int $batchSize): array
+    {
+        $groups = [];
 
         foreach ($feedback as $row) {
-            $byLanguage[(string) $row->target_language][] = $row;
+            $groups[(int) ($row->attempts ?? 0)][(string) $row->target_language][] = $row;
         }
 
-        return $byLanguage;
+        krsort($groups);
+
+        $requests = [];
+
+        foreach ($groups as $attempts => $byLanguage) {
+            $limit = RunResult::requestLimit($batchSize, $attempts);
+
+            foreach ($byLanguage as $rows) {
+                foreach (array_chunk($rows, $limit) as $request) {
+                    $requests[] = $request;
+                }
+            }
+        }
+
+        return $requests;
+    }
+
+    /**
+     * Count an attempt for the given feedback rows, before their request is sent.
+     *
+     * @param   int[]  $feedbackIds  The feedback row ids.
+     *
+     * @return  void
+     *
+     * @since   1.1.0
+     */
+    private function countAttempt(array $feedbackIds): void
+    {
+        $db    = $this->getDatabase();
+        $query = $db->getQuery(true)
+            ->update($db->quoteName('#__translations_feedback'))
+            ->set($db->quoteName('attempts') . ' = ' . $db->quoteName('attempts') . ' + 1')
+            ->whereIn($db->quoteName('id'), $feedbackIds);
+        $db->setQuery($query)->execute();
+    }
+
+    /**
+     * Record a failed request: keep the error on its rows and set aside the ones whose attempts
+     * are used up, so no later run pays for them again.
+     *
+     * @param   int[]      $feedbackIds  The feedback row ids of the request.
+     * @param   string     $message      The error the request ended with.
+     * @param   RunResult  $result       The run's result, updated in place.
+     *
+     * @return  void
+     *
+     * @since   1.1.0
+     */
+    private function recordFailure(array $feedbackIds, string $message, RunResult $result): void
+    {
+        $db        = $this->getDatabase();
+        $lastError = RunResult::errorText($message);
+        $query     = $db->getQuery(true)
+            ->update($db->quoteName('#__translations_feedback'))
+            ->set($db->quoteName('last_error') . ' = :lastError')
+            ->whereIn($db->quoteName('id'), $feedbackIds)
+            ->bind(':lastError', $lastError, ParameterType::STRING);
+        $db->setQuery($query)->execute();
+
+        $failed      = 'failed';
+        $maxAttempts = RunResult::MAX_ATTEMPTS;
+        $query       = $db->getQuery(true)
+            ->update($db->quoteName('#__translations_feedback'))
+            ->set($db->quoteName('status') . ' = :failed')
+            ->whereIn($db->quoteName('id'), $feedbackIds)
+            ->where($db->quoteName('attempts') . ' >= :maxAttempts')
+            ->bind(':failed', $failed, ParameterType::STRING)
+            ->bind(':maxAttempts', $maxAttempts, ParameterType::INTEGER);
+        $db->setQuery($query)->execute();
+
+        $result->failed      += \count($feedbackIds);
+        $result->quarantined += $db->getAffectedRows();
+        $result->lastError    = $lastError;
+
+        Log::add(
+            \sprintf('Could not distil feedback %s: %s', implode(', ', $feedbackIds), $lastError),
+            Log::WARNING,
+            'translations'
+        );
+    }
+
+    /**
+     * Resolve the standard form of the single-word source terms among the candidates, in one go.
+     *
+     * @param   array   $candidates      The rule candidates.
+     * @param   string  $sourceLanguage  The source language code.
+     *
+     * @return  array  Standard form keyed by the lower-cased term, for the terms resolved.
+     *
+     * @since   1.1.0
+     */
+    private function candidateStandardForms(array $candidates, string $sourceLanguage): array
+    {
+        $terms = [];
+
+        foreach ($candidates as $candidate) {
+            $term = \is_array($candidate) ? $this->nullableTerm($candidate['source_term'] ?? null) : null;
+
+            if ($term !== null && WordNormaliser::isSingleWord($term)) {
+                $terms[] = $term;
+            }
+        }
+
+        if ($terms === []) {
+            return [];
+        }
+
+        return WordNormaliser::standardForms($this->getDatabase(), $this->getDispatcher(), $terms, $sourceLanguage);
     }
 
     /**
@@ -465,20 +676,25 @@ class DistillerModel extends BaseDatabaseModel
      * @param   array   $candidates      The rule candidates.
      * @param   string  $targetLanguage  The target language code.
      * @param   array   $origins         The origin of each feedback row, keyed by row id.
+     * @param   array   $standardForms   Standard form keyed by lower-cased source term, where known.
      *
      * @return  void
      *
      * @since   0.4.0
      */
-    private function persistRules(array $candidates, string $targetLanguage, array $origins): void
-    {
+    private function persistRules(
+        array $candidates,
+        string $targetLanguage,
+        array $origins,
+        array $standardForms
+    ): void {
         foreach ($candidates as $candidate) {
             if (!\is_array($candidate)) {
                 continue;
             }
 
             try {
-                $this->saveRule($candidate, $targetLanguage, $origins);
+                $this->saveRule($candidate, $targetLanguage, $origins, $standardForms);
             } catch (\Throwable $e) {
                 // Skip a malformed candidate rather than lose the rest of the batch.
                 Log::add(
@@ -497,6 +713,7 @@ class DistillerModel extends BaseDatabaseModel
      * @param   array   $candidate       The rule candidate.
      * @param   string  $targetLanguage  The target language code.
      * @param   array   $origins         The origin of each feedback row, keyed by row id.
+     * @param   array   $standardForms   Standard form keyed by lower-cased source term, where known.
      *
      * @return  void
      *
@@ -504,8 +721,12 @@ class DistillerModel extends BaseDatabaseModel
      *
      * @since   0.4.0
      */
-    private function saveRule(array $candidate, string $targetLanguage, array $origins): void
-    {
+    private function saveRule(
+        array $candidate,
+        string $targetLanguage,
+        array $origins,
+        array $standardForms
+    ): void {
         /** @var RuleTable $table */
         $table       = $this->getTable('Rule', 'Administrator');
         $feedbackIds = array_values(array_unique(array_map('intval', (array) ($candidate['source_feedback_ids'] ?? []))));
@@ -522,12 +743,9 @@ class DistillerModel extends BaseDatabaseModel
             'target_language'      => $targetLanguage,
             'rule_text'            => (string) ($candidate['rule_text'] ?? ''),
             'source_term'          => $sourceTerm,
-            'source_term_standard' => WordNormaliser::standardForm(
-                $this->getDatabase(),
-                $this->getDispatcher(),
-                (string) $sourceTerm,
-                (string) ComponentHelper::getParams('com_translations')->get('source_language', 'en-GB')
-            ),
+            'source_term_standard' => $sourceTerm !== null && WordNormaliser::isSingleWord($sourceTerm)
+                ? ($standardForms[mb_strtolower($sourceTerm)] ?? null)
+                : null,
             'target_term'          => $this->nullableTerm($candidate['target_term'] ?? null),
             'search_keywords'      => (string) ($candidate['search_keywords'] ?? ''),
         ];

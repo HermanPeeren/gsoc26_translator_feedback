@@ -14,6 +14,8 @@ namespace Joomla\Plugin\Task\TranslationsSeed\Helper;
 \defined('_JEXEC') or die;
 // phpcs:enable PSR1.Files.SideEffects
 
+use Joomla\CMS\Plugin\PluginHelper;
+use Joomla\Component\Translations\Administrator\Helper\RunResult;
 use Joomla\Component\Translations\Administrator\Helper\StringTranslator;
 use Joomla\Database\DatabaseInterface;
 use Joomla\Database\ParameterType;
@@ -29,6 +31,9 @@ use Joomla\Event\DispatcherInterface;
  *
  * The machine translation is asked for without rules, so what the pack disagrees with is the
  * provider's own wording rather than something already learned on this site.
+ *
+ * Every request is paid for, so each string's attempts are counted before its request is sent,
+ * and a string that fails for the third time is set aside rather than sent again run after run.
  *
  * @since  1.0.0
  */
@@ -69,6 +74,30 @@ class Seeder
     private const SOURCE_ORIGIN = 'ini_import';
 
     /**
+     * The status of a string that is done: its feedback, if any, is written.
+     *
+     * @var    string
+     * @since  1.1.0
+     */
+    private const STATUS_SEEDED = 'seeded';
+
+    /**
+     * The status of a string whose request was sent but not answered usefully yet.
+     *
+     * @var    string
+     * @since  1.1.0
+     */
+    private const STATUS_RETRY = 'retry';
+
+    /**
+     * The status of a string that failed for the third time and is not sent again.
+     *
+     * @var    string
+     * @since  1.1.0
+     */
+    private const STATUS_FAILED = 'failed';
+
+    /**
      * The database driver.
      *
      * @var    DatabaseInterface
@@ -102,35 +131,44 @@ class Seeder
      * Seed feedback from one batch of a language pack's translated strings.
      *
      * A string already seeded for the language is skipped, so a run resumes where the last one
-     * stopped rather than paying for the same translations again.
+     * stopped rather than paying for the same translations again. Each request is saved as soon
+     * as it is answered, and a string that failed before is sent in a smaller request.
      *
      * @param   string    $sourceLanguage  The language tag the strings are written in.
      * @param   string    $targetLanguage  The language tag of the pack to learn from.
      * @param   integer   $batchSize       The most strings to seed in one run.
      * @param   string[]  $fileNames       The language file names to read, all of them when empty.
      *
-     * @return  integer  The number of strings seeded.
+     * @return  RunResult  What the run did, and whether it should run again.
      *
-     * @throws  \RuntimeException  When the language is the source language, or the provider is unreachable.
+     * @throws  \RuntimeException  When the language is the source language, or no provider is enabled.
      *
      * @since   1.0.0
      */
-    public function seed(string $sourceLanguage, string $targetLanguage, int $batchSize, array $fileNames = []): int
-    {
+    public function seed(
+        string $sourceLanguage,
+        string $targetLanguage,
+        int $batchSize,
+        array $fileNames = []
+    ): RunResult {
         if ($targetLanguage === $sourceLanguage) {
             throw new \RuntimeException(\sprintf('%s is the source language, so there is nothing to learn from.', $targetLanguage));
         }
 
-        $pending = $this->pendingPairs($sourceLanguage, $targetLanguage, $fileNames, $batchSize);
-
-        if ($pending === []) {
-            return 0;
+        // Without a provider every request would fail and use up an attempt of strings that are fine.
+        if (PluginHelper::getPlugin('translation') === []) {
+            throw new \RuntimeException(
+                'No translation provider is enabled. Enable a translation plugin to translate content.'
+            );
         }
 
-        $seeded   = 0;
+        $result   = new RunResult();
+        $pending  = $this->pendingPairs($sourceLanguage, $targetLanguage, $fileNames);
         $failures = 0;
 
-        foreach ($this->requestChunks($pending) as $chunk) {
+        foreach ($this->requestChunks(\array_slice($pending, 0, $batchSize, true)) as $chunk) {
+            $this->countAttempt($chunk, $targetLanguage);
+
             try {
                 $translated = StringTranslator::translate(
                     $this->dispatcher,
@@ -142,39 +180,45 @@ class Seeder
 
                 $failures = 0;
             } catch (\Throwable $e) {
-                $failures++;
+                $this->recordFailure(self::stringIds($chunk), $targetLanguage, $e->getMessage(), $result);
 
-                // Nothing is recorded for the chunk, so the strings stay pending for a later run.
-                if ($failures === self::MAX_CONSECUTIVE_FAILURES) {
-                    throw new \RuntimeException(
-                        \sprintf('Stopped after %d failures in a row, the last being: %s', $failures, $e->getMessage()),
-                        0,
-                        $e
+                if (++$failures === self::MAX_CONSECUTIVE_FAILURES) {
+                    $result->aborted   = true;
+                    $result->lastError = \sprintf(
+                        'Stopped after %d failures in a row, the last being: %s',
+                        $failures,
+                        $result->lastError
                     );
+
+                    break;
                 }
 
                 continue;
             }
 
-            $seeded += $this->recordChunk($chunk, $translated, $targetLanguage);
+            $this->recordChunk($chunk, $translated, $targetLanguage, $result);
         }
 
-        return $seeded;
+        $result->remaining = max(0, \count($pending) - $result->processed - $result->quarantined);
+
+        return $result;
     }
 
     /**
-     * Collect the pack's translated strings that have not been seeded yet, up to a batch.
+     * Collect the pack's translated strings that are still to be seeded.
+     *
+     * Strings that failed before come first, so they are settled before new ones are taken on.
+     * A string that is seeded, or set aside as failed, is left out.
      *
      * @param   string    $sourceLanguage  The source language code.
      * @param   string    $targetLanguage  The target language code.
      * @param   string[]  $fileNames       The language file names to read, all of them when empty.
-     * @param   integer   $batchSize       The most strings to collect.
      *
-     * @return  array  The pairs still to seed, keyed by string id.
+     * @return  array  The pairs still to seed, keyed by string id, each with its attempts so far.
      *
      * @since   1.0.0
      */
-    private function pendingPairs(string $sourceLanguage, string $targetLanguage, array $fileNames, int $batchSize): array
+    private function pendingPairs(string $sourceLanguage, string $targetLanguage, array $fileNames): array
     {
         $pairs = [];
 
@@ -186,34 +230,55 @@ class Seeder
             return [];
         }
 
-        foreach ($this->seededStringIds($targetLanguage, array_keys($pairs)) as $stringId) {
-            unset($pairs[$stringId]);
+        $states  = $this->seedStates($targetLanguage, array_keys($pairs));
+        $retried = [];
+        $untried = [];
+
+        foreach ($pairs as $stringId => $pair) {
+            $state = $states[$stringId] ?? null;
+
+            if ($state === null) {
+                $pair['attempts']   = 0;
+                $untried[$stringId] = $pair;
+            } elseif ($state['status'] === self::STATUS_RETRY && $state['attempts'] < RunResult::MAX_ATTEMPTS) {
+                $pair['attempts']   = $state['attempts'];
+                $retried[$stringId] = $pair;
+            }
         }
 
-        return \array_slice($pairs, 0, $batchSize, true);
+        return $retried + $untried;
     }
 
     /**
-     * Read back which of the given strings are already seeded for the language.
+     * Read back what is recorded for the given strings in the language.
      *
      * @param   string    $targetLanguage  The target language code.
      * @param   string[]  $stringIds       The string ids to look for.
      *
-     * @return  string[]  The string ids already seeded.
+     * @return  array  Status and attempts keyed by string id, for the strings recorded.
      *
-     * @since   1.0.0
+     * @since   1.1.0
      */
-    private function seededStringIds(string $targetLanguage, array $stringIds): array
+    private function seedStates(string $targetLanguage, array $stringIds): array
     {
         $query = $this->db->getQuery(true)
-            ->select($this->db->quoteName('string_id'))
+            ->select($this->db->quoteName(['string_id', 'status', 'attempts']))
             ->from($this->db->quoteName('#__translations_seeded_strings'))
             ->where($this->db->quoteName('target_language') . ' = :targetLanguage')
             ->whereIn($this->db->quoteName('string_id'), $stringIds, ParameterType::STRING)
             ->bind(':targetLanguage', $targetLanguage, ParameterType::STRING);
         $this->db->setQuery($query);
 
-        return $this->db->loadColumn() ?: [];
+        $states = [];
+
+        foreach ($this->db->loadAssocList() ?: [] as $row) {
+            $states[(string) $row['string_id']] = [
+                'status'   => (string) $row['status'],
+                'attempts' => (int) $row['attempts'],
+            ];
+        }
+
+        return $states;
     }
 
     /**
@@ -223,6 +288,10 @@ class Seeder
      * of keys are used for different text in different files. A chunk therefore ends early rather
      * than let one of those overwrite the other.
      *
+     * A string that failed before goes in a smaller request: half the size on its second attempt,
+     * on its own on its last. A string that keeps failing is so narrowed down without paying for a
+     * request per string as soon as one request fails. The strings that failed most come first.
+     *
      * @param   array  $pairs  The pairs to send, keyed by string id.
      *
      * @return  array  The chunks, each an array of pairs keyed by language key.
@@ -231,19 +300,30 @@ class Seeder
      */
     private function requestChunks(array $pairs): array
     {
-        $chunks = [];
-        $chunk  = [];
+        $byAttempts = [];
 
         foreach ($pairs as $pair) {
-            if (isset($chunk[$pair['key']]) || \count($chunk) >= self::STRINGS_PER_REQUEST) {
-                $chunks[] = $chunk;
-                $chunk    = [];
-            }
-
-            $chunk[$pair['key']] = $pair;
+            $byAttempts[(int) ($pair['attempts'] ?? 0)][] = $pair;
         }
 
-        if ($chunk !== []) {
+        krsort($byAttempts);
+
+        $chunks = [];
+
+        foreach ($byAttempts as $attempts => $group) {
+            $limit = RunResult::requestLimit(self::STRINGS_PER_REQUEST, $attempts);
+            $chunk = [];
+
+            foreach ($group as $pair) {
+                if (isset($chunk[$pair['key']]) || \count($chunk) >= $limit) {
+                    $chunks[] = $chunk;
+                    $chunk    = [];
+                }
+
+                $chunk[$pair['key']] = $pair;
+            }
+
+            // A group holds at least one pair, so its last chunk is never empty.
             $chunks[] = $chunk;
         }
 
@@ -251,52 +331,138 @@ class Seeder
     }
 
     /**
+     * Count an attempt for the strings of a chunk, before its request is sent.
+     *
+     * Counting first means a run that is killed while it waits for the provider still uses up
+     * one of the strings' attempts, so even a request that never returns is not repeated forever.
+     *
+     * @param   array   $chunk           The pairs about to be sent, keyed by language key.
+     * @param   string  $targetLanguage  The target language code.
+     *
+     * @return  void
+     *
+     * @since   1.1.0
+     */
+    private function countAttempt(array $chunk, string $targetLanguage): void
+    {
+        $untried = [];
+        $retried = [];
+
+        foreach ($chunk as $pair) {
+            if (($pair['attempts'] ?? 0) > 0) {
+                $retried[] = $pair['file'] . '#' . $pair['key'];
+            } else {
+                $untried[] = $pair['file'] . '#' . $pair['key'];
+            }
+        }
+
+        if ($retried !== []) {
+            $query = $this->db->getQuery(true)
+                ->update($this->db->quoteName('#__translations_seeded_strings'))
+                ->set($this->db->quoteName('attempts') . ' = ' . $this->db->quoteName('attempts') . ' + 1')
+                ->where($this->db->quoteName('target_language') . ' = :targetLanguage')
+                ->whereIn($this->db->quoteName('string_id'), $retried, ParameterType::STRING)
+                ->bind(':targetLanguage', $targetLanguage, ParameterType::STRING);
+            $this->db->setQuery($query)->execute();
+        }
+
+        if ($untried !== []) {
+            $query = $this->db->getQuery(true)
+                ->insert($this->db->quoteName('#__translations_seeded_strings'))
+                ->columns($this->db->quoteName(['target_language', 'string_id', 'status', 'attempts']));
+
+            foreach ($untried as $stringId) {
+                $query->values(
+                    implode(
+                        ',',
+                        $query->bindArray(
+                            [$targetLanguage, $stringId, self::STATUS_RETRY, 1],
+                            [ParameterType::STRING, ParameterType::STRING, ParameterType::STRING, ParameterType::INTEGER]
+                        )
+                    )
+                );
+            }
+
+            $this->db->setQuery($query)->execute();
+        }
+    }
+
+    /**
      * Record a translated chunk: the feedback it produced, and that its strings are seeded.
      *
      * A string the provider translated exactly as the pack does carries no correction to learn
      * from, so it writes no feedback. It is still marked seeded, because the call it took has been
-     * paid for either way. A string the provider passed over is not marked, so a later run asks
-     * for it again rather than losing it to a reply that came back short.
+     * paid for either way. A string the provider passed over counts as a failed attempt, so a
+     * later run asks for it again, up to its last attempt.
      *
-     * @param   array   $chunk           The pairs sent, keyed by language key.
-     * @param   array   $translated      The provider's translations, keyed as sent.
-     * @param   string  $targetLanguage  The target language code.
+     * The feedback and the seeded marks are written in one transaction, so a chunk is recorded
+     * whole or not at all.
      *
-     * @return  integer  The number of strings recorded.
+     * @param   array      $chunk           The pairs sent, keyed by language key.
+     * @param   array      $translated      The provider's translations, keyed as sent.
+     * @param   string     $targetLanguage  The target language code.
+     * @param   RunResult  $result          The run's result, updated in place.
+     *
+     * @return  void
      *
      * @since   1.0.0
      */
-    private function recordChunk(array $chunk, array $translated, string $targetLanguage): int
+    private function recordChunk(array $chunk, array $translated, string $targetLanguage, RunResult $result): void
     {
-        $stringIds = [];
+        $seeded  = [];
+        $missing = [];
 
-        foreach ($chunk as $key => $pair) {
-            $machineDraft = trim((string) ($translated[$key] ?? ''));
+        $this->db->transactionStart();
 
-            if ($machineDraft === '') {
-                continue;
+        try {
+            foreach ($chunk as $key => $pair) {
+                $stringId     = $pair['file'] . '#' . $pair['key'];
+                $machineDraft = trim((string) ($translated[$key] ?? ''));
+
+                if ($machineDraft === '') {
+                    $missing[] = $stringId;
+
+                    continue;
+                }
+
+                $seeded[] = $stringId;
+
+                if ($machineDraft === trim($pair['approved'])) {
+                    continue;
+                }
+
+                $row = (object) [
+                    'queue_id'         => 0,
+                    'source_text'      => $pair['source'],
+                    'machine_draft'    => $machineDraft,
+                    'human_correction' => $pair['approved'],
+                    'target_language'  => $targetLanguage,
+                    'source_origin'    => self::SOURCE_ORIGIN,
+                    'translator_id'    => 0,
+                ];
+
+                $this->db->insertObject('#__translations_feedback', $row);
             }
 
-            $stringIds[] = $pair['file'] . '#' . $pair['key'];
+            $this->markSeeded($seeded, $targetLanguage);
+            $this->db->transactionCommit();
+        } catch (\Throwable $e) {
+            $this->db->transactionRollback();
+            $this->recordFailure(self::stringIds($chunk), $targetLanguage, $e->getMessage(), $result);
 
-            if ($machineDraft === trim($pair['approved'])) {
-                continue;
-            }
-
-            $row = (object) [
-                'queue_id'         => 0,
-                'source_text'      => $pair['source'],
-                'machine_draft'    => $machineDraft,
-                'human_correction' => $pair['approved'],
-                'target_language'  => $targetLanguage,
-                'source_origin'    => self::SOURCE_ORIGIN,
-                'translator_id'    => 0,
-            ];
-
-            $this->db->insertObject('#__translations_feedback', $row);
+            return;
         }
 
-        return $this->markSeeded($stringIds, $targetLanguage);
+        $result->processed += \count($seeded);
+
+        if ($missing !== []) {
+            $this->recordFailure(
+                $missing,
+                $targetLanguage,
+                'The provider returned no translation for this string.',
+                $result
+            );
+        }
     }
 
     /**
@@ -305,32 +471,87 @@ class Seeder
      * @param   string[]  $stringIds       The string ids to mark.
      * @param   string    $targetLanguage  The target language code.
      *
-     * @return  integer  The number of strings marked.
+     * @return  void
      *
      * @since   1.0.0
      */
-    private function markSeeded(array $stringIds, string $targetLanguage): int
+    private function markSeeded(array $stringIds, string $targetLanguage): void
     {
         if ($stringIds === []) {
-            return 0;
+            return;
         }
 
-        $query = $this->db->getQuery(true)
-            ->insert($this->db->quoteName('#__translations_seeded_strings'))
-            ->columns($this->db->quoteName(['target_language', 'string_id']));
+        $status    = self::STATUS_SEEDED;
+        $lastError = '';
+        $query     = $this->db->getQuery(true)
+            ->update($this->db->quoteName('#__translations_seeded_strings'))
+            ->set($this->db->quoteName('status') . ' = :status')
+            ->set($this->db->quoteName('last_error') . ' = :lastError')
+            ->where($this->db->quoteName('target_language') . ' = :targetLanguage')
+            ->whereIn($this->db->quoteName('string_id'), $stringIds, ParameterType::STRING)
+            ->bind(':status', $status, ParameterType::STRING)
+            ->bind(':lastError', $lastError, ParameterType::STRING)
+            ->bind(':targetLanguage', $targetLanguage, ParameterType::STRING);
 
-        foreach ($stringIds as $stringId) {
-            $query->values(
-                implode(
-                    ',',
-                    $query->bindArray([$targetLanguage, $stringId], [ParameterType::STRING, ParameterType::STRING])
-                )
-            );
-        }
+        $this->db->setQuery($query)->execute();
+    }
 
-        $this->db->setQuery($query);
-        $this->db->execute();
+    /**
+     * Record a failed attempt: keep the error on its strings and set aside the ones whose
+     * attempts are used up, so no later run pays for them again.
+     *
+     * @param   string[]   $stringIds       The string ids that failed.
+     * @param   string     $targetLanguage  The target language code.
+     * @param   string     $message         The error the attempt ended with.
+     * @param   RunResult  $result          The run's result, updated in place.
+     *
+     * @return  void
+     *
+     * @since   1.1.0
+     */
+    private function recordFailure(array $stringIds, string $targetLanguage, string $message, RunResult $result): void
+    {
+        $lastError = RunResult::errorText($message);
+        $query     = $this->db->getQuery(true)
+            ->update($this->db->quoteName('#__translations_seeded_strings'))
+            ->set($this->db->quoteName('last_error') . ' = :lastError')
+            ->where($this->db->quoteName('target_language') . ' = :targetLanguage')
+            ->whereIn($this->db->quoteName('string_id'), $stringIds, ParameterType::STRING)
+            ->bind(':lastError', $lastError, ParameterType::STRING)
+            ->bind(':targetLanguage', $targetLanguage, ParameterType::STRING);
+        $this->db->setQuery($query)->execute();
 
-        return \count($stringIds);
+        $failed      = self::STATUS_FAILED;
+        $maxAttempts = RunResult::MAX_ATTEMPTS;
+        $query       = $this->db->getQuery(true)
+            ->update($this->db->quoteName('#__translations_seeded_strings'))
+            ->set($this->db->quoteName('status') . ' = :failed')
+            ->where($this->db->quoteName('target_language') . ' = :targetLanguage')
+            ->whereIn($this->db->quoteName('string_id'), $stringIds, ParameterType::STRING)
+            ->where($this->db->quoteName('attempts') . ' >= :maxAttempts')
+            ->bind(':failed', $failed, ParameterType::STRING)
+            ->bind(':targetLanguage', $targetLanguage, ParameterType::STRING)
+            ->bind(':maxAttempts', $maxAttempts, ParameterType::INTEGER);
+        $this->db->setQuery($query)->execute();
+
+        $result->failed      += \count($stringIds);
+        $result->quarantined += $this->db->getAffectedRows();
+        $result->lastError    = $lastError;
+    }
+
+    /**
+     * The string ids of the pairs in a chunk.
+     *
+     * @param   array  $chunk  The pairs, keyed by language key.
+     *
+     * @return  string[]  The string ids.
+     *
+     * @since   1.1.0
+     */
+    private static function stringIds(array $chunk): array
+    {
+        return array_values(
+            array_map(static fn(array $pair): string => $pair['file'] . '#' . $pair['key'], $chunk)
+        );
     }
 }

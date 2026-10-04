@@ -20,6 +20,7 @@ use Joomla\CMS\Plugin\CMSPlugin;
 use Joomla\Component\Scheduler\Administrator\Event\ExecuteTaskEvent;
 use Joomla\Component\Scheduler\Administrator\Task\Status;
 use Joomla\Component\Scheduler\Administrator\Traits\TaskPluginTrait;
+use Joomla\Component\Translations\Administrator\Helper\RunResult;
 use Joomla\Component\Translations\Administrator\Model\DistillerModel;
 use Joomla\Event\SubscriberInterface;
 
@@ -96,25 +97,67 @@ final class TranslationsDistiller extends CMSPlugin implements SubscriberInterfa
         $model = $component->getMVCFactory()->createModel('Distiller', 'Administrator', ['ignore_request' => true]);
 
         try {
-            $processed = $model->distill($batchSize);
+            $result = $model->distill($batchSize);
         } catch (\Throwable $e) {
-            $message = $e->getMessage();
-            $this->logTask($message, 'error');
-            $this->snapshot['output']      = $message;
-            $this->snapshot['output_body'] = $message;
-
-            return Status::KNOCKOUT;
+            return $this->knockout($e->getMessage());
         }
 
-        if ($processed === 0) {
+        if ($result->processed === 0 && $result->failed === 0) {
             $this->logTask($language->_('PLG_TASK_TRANSLATIONSDISTILLER_LOG_NONE'));
 
             return Status::OK;
         }
 
-        $this->logTask(\sprintf($language->_('PLG_TASK_TRANSLATIONSDISTILLER_LOG_PROCESSED'), $processed));
+        if ($result->processed > 0) {
+            $this->logTask(
+                \sprintf(
+                    $language->_('PLG_TASK_TRANSLATIONSDISTILLER_LOG_PROCESSED'),
+                    $result->processed,
+                    $result->remaining
+                )
+            );
+        }
 
-        // A full batch usually means more feedback is pending; resume until a run comes up short.
-        return $processed === $batchSize ? Status::WILL_RESUME : Status::OK;
+        if ($result->failed > 0) {
+            $this->logTask(
+                \sprintf(
+                    $language->_('PLG_TASK_TRANSLATIONSDISTILLER_LOG_FAILED'),
+                    $result->failed,
+                    $result->quarantined,
+                    $result->lastError
+                ),
+                'warning'
+            );
+        }
+
+        // Resume only after progress: a batch that fails every time must not be retried run after run.
+        switch ($result->outcome()) {
+            case RunResult::RESUME:
+                return Status::WILL_RESUME;
+
+            case RunResult::ERROR:
+                return $this->knockout($result->lastError);
+
+            default:
+                return Status::OK;
+        }
+    }
+
+    /**
+     * Log an error as the outcome of the run.
+     *
+     * @param   string  $message  The error message.
+     *
+     * @return  integer  The KNOCKOUT exit status.
+     *
+     * @since   1.1.0
+     */
+    private function knockout(string $message): int
+    {
+        $this->logTask($message, 'error');
+        $this->snapshot['output']      = $message;
+        $this->snapshot['output_body'] = $message;
+
+        return Status::KNOCKOUT;
     }
 }
