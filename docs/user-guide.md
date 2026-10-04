@@ -14,6 +14,11 @@ translations, so the translations get closer to how the community actually write
 
 ## Prerequisites
 
+The package needs Joomla 6, PHP 8.3 or newer, and a MySQL or MariaDB database (PostgreSQL is
+not supported yet). The provider plugins that ship with it call Claude, so you also need an
+API key from Anthropic; another provider can be added as a plugin, see
+[translation-plugin.md](translation-plugin.md).
+
 The component assumes a **multilingual Joomla site**:
 
 - More than one content language installed and published.
@@ -40,6 +45,24 @@ and compares it against the source's current version to notice when an original 
 edited since it was translated. Such a translation is sent back for re-translation. With
 versions turned off Joomla stores no history, an edited original is never noticed, and
 its translations stay out of date without telling anyone.
+
+## Installing and setting up
+
+1. Download `pkg_translations-<version>.zip` from the
+   [Releases page](https://github.com/joomla-projects/gsoc26_translator_feedback/releases) and
+   install it in **System, Install, Extensions**. It installs the component and five plugins.
+2. Joomla installs plugins disabled, so enable them in **System, Manage, Plugins**:
+   - **Content - Translations** keeps the queue in step with your content. It notices when an
+     original is edited, adds the "no need for translation" toggle, preselects the source
+     language on a new item, and trashes or removes translations when their original is trashed
+     or deleted. Enable it before you start.
+   - **Translation - Claude** makes the translation call. Enter your **API key** and choose a
+     **Model**.
+   - **RAG - Claude** distils rules from feedback and works out the standard form of words. It
+     has its own **API key** and **Model**, which can differ from the translation plugin's.
+   - **Task - Translations Translate** and **Task - Translations Distiller** are needed only if
+     you want to run the work on a schedule (see "Doing it on a schedule").
+3. Set the source language in the component's Options, as described next.
 
 ## Setting the source language
 
@@ -179,6 +202,18 @@ Each rule also carries a confidence, between 0 and 1, which is the distiller's o
 of how well established the convention looked. It is there to help you decide what to
 publish.
 
+Each rule also records its **origin**, how it came to exist, and the Rules view can filter on
+it:
+
+- **Distilled from feedback**: learned from corrections translators made.
+- **Imported from language files**: learned from a language pack by the seed task (see
+  "Starting from your language pack").
+- **Manually authored**: written by hand in the Rules view.
+- **Imported from the wiki**: reserved for rules taken from the documentation wiki, which
+  nothing produces yet.
+
+The origin is set when a rule is created and cannot be changed afterwards.
+
 ### How the rules reach a translation
 
 Only the rules that matter to an item are sent when it is translated, not the whole rule
@@ -235,26 +270,53 @@ items. Marked items drop out of the queue (and can be brought back from the queu
 ## Doing it on a schedule
 
 Both halves of the loop can run unattended, through Joomla's own **Scheduled Tasks**
-(System, then Scheduled Tasks). The component ships two task types:
+(**System, Manage, Scheduled Tasks**). The component ships two task types:
 
 - **Translate Queued Items** takes items with no translation yet, and ones sent back to
   pending, and translates them a few at a time.
 - **Distil Translation Rules** reads the feedback collected from approvals and turns it into
-  draft rules.
+  rules, unpublished unless **Auto-Publish New Rules** is on.
 
 Both are optional. Everything they do can also be done by hand: translate from a queue cell,
 and distil with the **Distil Now** button in the Rules view. How many items each run handles
 is a setting on the task, so you can keep a run short on a busy site.
 
-The plugins that provide these tasks are disabled when the package is installed, like every
-Joomla plugin, so enable the ones you want before creating a task.
+## Starting from your language pack
 
-## What is still in progress
+Before anyone has corrected a translation, a site's language packs already hold years of
+decisions by its translation team. The seed task learns from those: it translates the
+strings of the source language's pack with no rules at all, compares each result with the
+translation the target language's pack already carries, and records every difference as
+feedback. The distiller then turns that feedback into rules, like any other, with the origin
+**Imported from language files**.
 
-The component is under active development. One thing is worth knowing:
+The seed task is optional and a separate download:
 
-- The component needs a **translation plugin** and a **RAG plugin** to be installed, enabled
-  and configured with an API key. With no translation plugin enabled, asking for a
-  translation reports an error rather than producing anything.
+1. Download `plg_task_translationsseed-<version>.zip` from the same Releases page and install
+   it. It needs the package installed first.
+2. Enable **Task - Translations Seed** in **System, Manage, Plugins**.
+3. In **System, Manage, Scheduled Tasks**, create a **Seed Translation Rules From a Language
+   Pack** task and set:
+   - **Language**: the installed language to learn from.
+   - **Batch Size**: the most strings seeded in one run (50 by default). A run that finishes a
+     full batch is followed by the next one, so a whole pack is worked through over several
+     runs.
+   - **Language Files**: a comma separated list such as `com_content.ini`, or empty to read the
+     whole pack.
 
-This guide will grow as more lands.
+The task translates through the translation plugin, so that plugin must be enabled and have
+its key. A string that has been seeded is not sent again, so running the task again does not
+pay for it twice. A string the machine already translates the way the pack does writes no
+feedback, because there is nothing to learn from it.
+
+## Translators working from the site
+
+A translator does not need access to the administrator. The queue and the rules can be put on
+the site as menu items: in **Menus**, add a menu item and choose **Translator Feedback**, then
+**Translation Queue** or **Translation Rules**. From there a translator can translate, correct
+and approve, and write, edit, publish and unpublish rules.
+
+Who may use them is decided by the **Edit** permission on the component. Joomla's standard
+**Publisher** group already has it, so a Publisher can translate without any further setup,
+and someone without it is refused. Distilling, and exporting or importing rules, stay in the
+administrator.
