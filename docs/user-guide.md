@@ -347,6 +347,8 @@ start them with **Run Test** in the list of Scheduled Tasks:
   of attempts. Run it once the cause is fixed, such as an invalid model or an empty credit
   balance.
 - **Retry Failed Language Pack Strings** does the same for the seed task's strings.
+- **Forget a Seeded Language** undoes the seeding of one language, so its pack can be seeded
+  again from scratch (see "Seeding a language again" below).
 - **Merge Duplicate Translation Rules** merges terminology and preservation rules with the same
   term and the same translation, for one language or all. The oldest rule of each set is kept;
   it takes over the evidence and the highest confidence of the others, and is published when
@@ -387,6 +389,22 @@ many strings it stands for. A string the machine already translates the way the 
 writes no feedback, because there is nothing to learn from it. Like the distiller, the seed
 task tries a string that failed again in a smaller request, and sets it aside as `failed` after
 its third attempt.
+
+### Seeding a language again
+
+A string that has been seeded is never sent again, so to seed a pack anew - for instance with a
+better model, or with the cheaper and cleaner distillation of version 1.2.0 - first forget the
+earlier seeding:
+
+1. Create a **Forget a Seeded Language** task, choose the **Language**, save it, and start it
+   with **Run Test**.
+   - The record of which strings were seeded, and the feedback the seed task wrote for that
+     language, are **deleted**. This cannot be undone.
+   - The **unpublished** rules learned only from the pack are moved to the **trash**, where they
+     can still be restored.
+   - **Published** rules are kept, because someone reviewed them, and so are feedback and rules
+     that came from translators.
+2. Run the seed task for that language again, and let the distil task follow.
 
 Seed version 1.2.0 needs version 1.2.0 of the package, because it records how many strings a
 feedback row stands for. For a whole core language pack, plan for roughly an hour and a half

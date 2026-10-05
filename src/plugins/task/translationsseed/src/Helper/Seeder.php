@@ -239,6 +239,77 @@ class Seeder
     }
 
     /**
+     * Forget what was seeded for a language, so its pack can be seeded again from scratch.
+     *
+     * The seeding records are removed, so the next run sends every string again; the feedback the
+     * seed task wrote is removed, so old corrections are not distilled next to new ones; and the
+     * unpublished rules learned only from the pack are trashed, where they can still be restored.
+     * A published rule was reviewed by someone, and feedback and rules from translators are not
+     * the seed task's, so those are left alone.
+     *
+     * @param   string  $targetLanguage  The language to forget.
+     *
+     * @return  array  The numbers of strings forgotten, feedback rows deleted and rules trashed,
+     *                 keyed strings, feedback and rules.
+     *
+     * @throws  \RuntimeException  When no language is given.
+     *
+     * @since   1.2.0
+     */
+    public function forget(string $targetLanguage): array
+    {
+        if ($targetLanguage === '') {
+            throw new \RuntimeException('No language is selected, so there is nothing to forget.');
+        }
+
+        $origin = self::SOURCE_ORIGIN;
+        $counts = [];
+
+        $this->db->transactionStart();
+
+        try {
+            $query = $this->db->getQuery(true)
+                ->delete($this->db->quoteName('#__translations_seeded_strings'))
+                ->where($this->db->quoteName('target_language') . ' = :targetLanguage')
+                ->bind(':targetLanguage', $targetLanguage, ParameterType::STRING);
+            $this->db->setQuery($query)->execute();
+            $counts['strings'] = $this->db->getAffectedRows();
+
+            $query = $this->db->getQuery(true)
+                ->delete($this->db->quoteName('#__translations_feedback'))
+                ->where($this->db->quoteName('target_language') . ' = :targetLanguage')
+                ->where($this->db->quoteName('source_origin') . ' = :origin')
+                ->bind(':targetLanguage', $targetLanguage, ParameterType::STRING)
+                ->bind(':origin', $origin, ParameterType::STRING);
+            $this->db->setQuery($query)->execute();
+            $counts['feedback'] = $this->db->getAffectedRows();
+
+            $trashed     = -2;
+            $unpublished = 0;
+            $query       = $this->db->getQuery(true)
+                ->update($this->db->quoteName('#__translations_rules'))
+                ->set($this->db->quoteName('state') . ' = :trashed')
+                ->where($this->db->quoteName('target_language') . ' = :targetLanguage')
+                ->where($this->db->quoteName('source_origin') . ' = :origin')
+                ->where($this->db->quoteName('state') . ' = :unpublished')
+                ->bind(':trashed', $trashed, ParameterType::INTEGER)
+                ->bind(':targetLanguage', $targetLanguage, ParameterType::STRING)
+                ->bind(':origin', $origin, ParameterType::STRING)
+                ->bind(':unpublished', $unpublished, ParameterType::INTEGER);
+            $this->db->setQuery($query)->execute();
+            $counts['rules'] = $this->db->getAffectedRows();
+
+            $this->db->transactionCommit();
+        } catch (\Throwable $e) {
+            $this->db->transactionRollback();
+
+            throw $e;
+        }
+
+        return $counts;
+    }
+
+    /**
      * Collect the pack's translated strings that are still to be seeded.
      *
      * Strings that failed before come first, so they are settled before new ones are taken on.

@@ -55,6 +55,11 @@ final class TranslationsSeed extends CMSPlugin implements SubscriberInterface
             'langConstPrefix' => 'PLG_TASK_TRANSLATIONSSEED_RESETFAILED',
             'method'          => 'resetFailed',
         ],
+        'translationsseed.forget' => [
+            'langConstPrefix' => 'PLG_TASK_TRANSLATIONSSEED_FORGET',
+            'form'            => 'forget',
+            'method'          => 'forget',
+        ],
     ];
 
     /**
@@ -189,6 +194,38 @@ final class TranslationsSeed extends CMSPlugin implements SubscriberInterface
         }
 
         $this->logTask(\sprintf($this->getApplication()->getLanguage()->_('PLG_TASK_TRANSLATIONSSEED_RESETFAILED_LOG'), $reset));
+
+        return Status::OK;
+    }
+
+    /**
+     * Forget what was seeded for a language, so its pack can be seeded again from scratch.
+     *
+     * @param   ExecuteTaskEvent  $event  The onExecuteTask event.
+     *
+     * @return  integer  The task exit status.
+     *
+     * @since   1.2.0
+     */
+    protected function forget(ExecuteTaskEvent $event): int
+    {
+        $targetLanguage = (string) ($event->getArgument('params')->target_language ?? '');
+
+        try {
+            $counts = (new Seeder($this->getDatabase(), $this->getApplication()->getDispatcher()))->forget($targetLanguage);
+        } catch (\Throwable $e) {
+            return $this->knockout($e->getMessage());
+        }
+
+        $this->logTask(
+            \sprintf(
+                $this->getApplication()->getLanguage()->_('PLG_TASK_TRANSLATIONSSEED_FORGET_LOG'),
+                $targetLanguage,
+                $counts['strings'],
+                $counts['feedback'],
+                $counts['rules']
+            )
+        );
 
         return Status::OK;
     }
