@@ -5,7 +5,7 @@
 	<author>Joomla! Project</author>
 	<authorUrl>https://github.com/joomla-projects/gsoc26_translator_feedback</authorUrl>
 	<license>GNU General Public License version 2 or later; see LICENSE.txt</license>
-	<version>0.4.0</version>
+	<version>1.2.0</version>
 	<description>PLG_RAG_CLAUDE_XML_DESCRIPTION</description>
 	<namespace path="src">Joomla\Plugin\Rag\Claude</namespace>
 	<files>
@@ -38,6 +38,28 @@
 					<option value="claude-sonnet-5">Claude Sonnet 5</option>
 					<option value="claude-haiku-4-5">Claude Haiku 4.5</option>
 				</field>
+				<field
+					name="effort"
+					type="list"
+					label="PLG_RAG_CLAUDE_FIELD_EFFORT_LABEL"
+					description="PLG_RAG_CLAUDE_FIELD_EFFORT_DESC"
+					default="low"
+					validate="options"
+				>
+					<option value="low">PLG_RAG_CLAUDE_FIELD_EFFORT_LOW</option>
+					<option value="medium">PLG_RAG_CLAUDE_FIELD_EFFORT_MEDIUM</option>
+					<option value="high">PLG_RAG_CLAUDE_FIELD_EFFORT_HIGH</option>
+				</field>
+				<field
+					name="timeout"
+					type="number"
+					label="PLG_RAG_CLAUDE_FIELD_TIMEOUT_LABEL"
+					description="PLG_RAG_CLAUDE_FIELD_TIMEOUT_DESC"
+					default="300"
+					min="10"
+					step="1"
+					filter="int"
+				/>
 			</fieldset>
 		</fields>
 	</config>

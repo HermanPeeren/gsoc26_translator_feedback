@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<form>
+	<fields name="params">
+		<fieldset name="task_params">
+			<field
+				name="target_language"
+				type="language"
+				client="administrator"
+				label="PLG_TASK_TRANSLATIONSDISTILLER_MERGERULES_LANGUAGE_LABEL"
+				description="PLG_TASK_TRANSLATIONSDISTILLER_MERGERULES_LANGUAGE_DESC"
+				default=""
+			>
+				<option value="">PLG_TASK_TRANSLATIONSDISTILLER_MERGERULES_ALL_LANGUAGES</option>
+			</field>
+		</fieldset>
+	</fields>
+</form>

@@ -20,8 +20,10 @@ use Joomla\CMS\Log\Log;
 use Joomla\CMS\MVC\Model\BaseDatabaseModel;
 use Joomla\CMS\Plugin\PluginHelper;
 use Joomla\Component\Translations\Administrator\Event\DistilEvent;
+use Joomla\Component\Translations\Administrator\Helper\RuleMerger;
 use Joomla\Component\Translations\Administrator\Helper\RuleRetriever;
 use Joomla\Component\Translations\Administrator\Helper\RunResult;
+use Joomla\Component\Translations\Administrator\Helper\TimeBudget;
 use Joomla\Component\Translations\Administrator\Helper\WordNormaliser;
 use Joomla\Component\Translations\Administrator\Table\RuleTable;
 use Joomla\Database\ParameterType;
@@ -84,14 +86,71 @@ class DistillerModel extends BaseDatabaseModel
     private const CONTEXT_RULE_FIELDS = ['id', 'rule_type', 'rule_name', 'rule_text', 'source_term', 'target_term'];
 
     /**
-     * Distil draft rules from one batch of pending feedback.
+     * The most corrections in one request when the caller sets none.
+     *
+     * Every request carries the same system prompt and up to fifty existing rules as context,
+     * about ten thousand tokens, so a request of a few corrections pays mostly for that context.
+     * Measured on language-pack corrections, fifty per request cost a sixth per correction of
+     * five per request, and took about 25 seconds at low effort.
+     *
+     * @var    integer
+     * @since  1.2.0
+     */
+    public const DEFAULT_REQUEST_SIZE = 50;
+
+    /**
+     * Failed requests in a row that end a run, because the provider is then most likely
+     * unreachable and every further request is paid for the same answer.
+     *
+     * @var    integer
+     * @since  1.2.0
+     */
+    private const MAX_CONSECUTIVE_FAILURES = 2;
+
+    /**
+     * The input tokens a request aims to stay under, context included.
+     *
+     * @var    integer
+     * @since  1.2.0
+     */
+    private const INPUT_TOKEN_BUDGET = 20000;
+
+    /**
+     * The part of the input budget kept for the system prompt and the context rules.
+     *
+     * @var    integer
+     * @since  1.2.0
+     */
+    private const CONTEXT_RESERVE_TOKENS = 10000;
+
+    /**
+     * Characters per token used to estimate a request's size before it is sent; on the
+     * language-pack corrections that were measured, a token was about three characters.
+     *
+     * @var    integer
+     * @since  1.2.0
+     */
+    private const CHARS_PER_TOKEN = 3;
+
+    /**
+     * The length above which a correction's texts are sent as excerpts around their changes.
+     *
+     * @var    integer
+     * @since  1.2.0
+     */
+    private const EXCERPT_THRESHOLD = 1500;
+
+    /**
+     * Distil draft rules from pending feedback, for as long as the run's time budget allows.
      *
      * Feedback is sent one target language at a time so its terminology stays coherent. Each
-     * request is saved as soon as it is answered, so a later failure does not lose earlier work,
-     * and a row that failed before is sent in a smaller request, so it cannot hold back the rows
-     * it was batched with. A row that fails for the third time is set aside as failed.
+     * request is saved as soon as it is answered, so a later failure does not lose earlier work.
+     * A row that failed before is sent in a smaller request, so it cannot hold back the rows it
+     * was batched with, and not again in the same run; after its third failure it is set aside.
      *
-     * @param   integer  $batchSize  The most feedback rows to process in one run.
+     * @param   integer          $requestSize  The most corrections in one request.
+     * @param   TimeBudget|null  $budget       How long the run may keep sending requests; the
+     *                                         default for where it runs when null.
      *
      * @return  RunResult  What the run did, and whether it should run again.
      *
@@ -99,27 +158,95 @@ class DistillerModel extends BaseDatabaseModel
      *
      * @since   0.4.0
      */
-    public function distill(int $batchSize = 10): RunResult
+    public function distill(int $requestSize = self::DEFAULT_REQUEST_SIZE, ?TimeBudget $budget = null): RunResult
     {
         // Without a provider every request would fail and use up an attempt of rows that are fine.
         if (PluginHelper::getPlugin('rag') === []) {
             throw new \RuntimeException('No distillation provider is enabled. Enable a RAG plugin to distil rules.');
         }
 
-        $result   = new RunResult();
-        $feedback = $this->loadPendingFeedback($batchSize);
+        $budget         = $budget ?? new TimeBudget();
+        $result         = new RunResult();
+        $sourceLanguage = (string) ComponentHelper::getParams('com_translations')->get('source_language', 'en-GB');
+        $tried          = [];
+        $failures       = 0;
 
-        if ($feedback !== []) {
-            $sourceLanguage = (string) ComponentHelper::getParams('com_translations')->get('source_language', 'en-GB');
+        while ($budget->allowsAnother()) {
+            $rows = self::selectRequest($this->pendingCandidates($requestSize, $tried), $requestSize);
 
-            foreach ($this->requestBatches($feedback, $batchSize) as $rows) {
-                $this->distilRequest($rows, $sourceLanguage, $result);
+            if ($rows === []) {
+                break;
+            }
+
+            foreach ($rows as $row) {
+                $tried[] = (int) $row->id;
+            }
+
+            $budget->startRequest();
+            $answered = $this->distilRequest($rows, $sourceLanguage, $result);
+            $budget->endRequest();
+
+            if ($answered) {
+                $failures = 0;
+            } elseif (++$failures === self::MAX_CONSECUTIVE_FAILURES) {
+                $result->aborted   = true;
+                $result->lastError = \sprintf(
+                    'Stopped after %d failures in a row, the last being: %s',
+                    $failures,
+                    $result->lastError
+                );
+
+                break;
             }
         }
 
         $result->remaining = $this->countPendingFeedback();
 
         return $result;
+    }
+
+    /**
+     * Give the feedback rows that were set aside as failed a new set of attempts.
+     *
+     * For use once the cause of the failures is fixed, such as an invalid model or an empty
+     * credit balance.
+     *
+     * @return  integer  The number of rows made pending again.
+     *
+     * @since   1.2.0
+     */
+    public function resetFailed(): int
+    {
+        $failed    = 'failed';
+        $pending   = 'pending';
+        $lastError = '';
+        $db        = $this->getDatabase();
+        $query     = $db->getQuery(true)
+            ->update($db->quoteName('#__translations_feedback'))
+            ->set($db->quoteName('status') . ' = :pending')
+            ->set($db->quoteName('attempts') . ' = 0')
+            ->set($db->quoteName('last_error') . ' = :lastError')
+            ->where($db->quoteName('status') . ' = :failed')
+            ->bind(':pending', $pending, ParameterType::STRING)
+            ->bind(':lastError', $lastError, ParameterType::STRING)
+            ->bind(':failed', $failed, ParameterType::STRING);
+        $db->setQuery($query)->execute();
+
+        return $db->getAffectedRows();
+    }
+
+    /**
+     * Merge the existing rules that say the same thing, keeping the oldest of each set.
+     *
+     * @param   string  $language  The target language to merge, all languages when empty.
+     *
+     * @return  integer  The number of rules merged away (trashed).
+     *
+     * @since   1.2.0
+     */
+    public function mergeDuplicateRules(string $language = ''): int
+    {
+        return RuleMerger::mergeDuplicates($this->getDatabase(), $language);
     }
 
     /**
@@ -134,11 +261,11 @@ class DistillerModel extends BaseDatabaseModel
      * @param   string     $sourceLanguage  The source language code.
      * @param   RunResult  $result          The run's result, updated in place.
      *
-     * @return  void
+     * @return  boolean  True when the provider answered and the answer was saved.
      *
      * @since   1.1.0
      */
-    private function distilRequest(array $rows, string $sourceLanguage, RunResult $result): void
+    private function distilRequest(array $rows, string $sourceLanguage, RunResult $result): bool
     {
         $targetLanguage = (string) $rows[0]->target_language;
         $corrections    = [];
@@ -154,12 +281,19 @@ class DistillerModel extends BaseDatabaseModel
 
             $this->storeDiff($feedbackId, $diff);
 
+            [$sourceText, $machineDraft, $humanCorrection] = self::excerpts(
+                (string) $row->source_text,
+                (string) $row->machine_draft,
+                (string) $row->human_correction
+            );
+
             $corrections[] = [
                 'id'               => $feedbackId,
-                'source_text'      => (string) $row->source_text,
-                'machine_draft'    => (string) $row->machine_draft,
-                'human_correction' => (string) $row->human_correction,
+                'source_text'      => $sourceText,
+                'machine_draft'    => $machineDraft,
+                'human_correction' => $humanCorrection,
                 'diff'             => $diff,
+                'occurrences'      => max(1, (int) ($row->occurrences ?? 1)),
             ];
         }
 
@@ -178,7 +312,7 @@ class DistillerModel extends BaseDatabaseModel
         } catch (\Throwable $e) {
             $this->recordFailure($rowIds, $e->getMessage(), $result);
 
-            return;
+            return false;
         }
 
         $db = $this->getDatabase();
@@ -192,42 +326,29 @@ class DistillerModel extends BaseDatabaseModel
             $db->transactionRollback();
             $this->recordFailure($rowIds, $e->getMessage(), $result);
 
-            return;
+            return false;
         }
 
         $result->processed += \count($rowIds);
+
+        return true;
     }
 
     /**
-     * Load the pending feedback rows for one run, up to the batch size.
+     * Load the pending feedback rows the next request is chosen from.
      *
-     * Rows that failed before come first: a run that has any of them works only on those, so a
-     * row that keeps failing is found out without taking healthy rows down with it.
+     * Rows that failed most come first, then one target language at a time, oldest first. A row
+     * already sent in this run is left out, so a row that failed waits for a later run rather than
+     * using up its attempts within a minute.
      *
-     * @param   integer  $batchSize  The most rows to return.
+     * @param   integer  $requestSize  The most corrections in one request.
+     * @param   int[]    $tried        The ids of the rows already sent in this run.
      *
-     * @return  object[]  The feedback rows, oldest first.
+     * @return  object[]  The candidate rows, in the order they should be sent.
      *
-     * @since   0.4.0
+     * @since   1.2.0
      */
-    private function loadPendingFeedback(int $batchSize): array
-    {
-        $retried = $this->queryPendingFeedback($batchSize, true);
-
-        return $retried !== [] ? $retried : $this->queryPendingFeedback($batchSize, false);
-    }
-
-    /**
-     * Query pending feedback rows that have, or have not, been attempted before.
-     *
-     * @param   integer  $batchSize  The most rows to return.
-     * @param   boolean  $retried    True for rows that failed before, false for untried rows.
-     *
-     * @return  object[]  The feedback rows, oldest first.
-     *
-     * @since   1.1.0
-     */
-    private function queryPendingFeedback(int $batchSize, bool $retried): array
+    private function pendingCandidates(int $requestSize, array $tried): array
     {
         $status      = 'pending';
         $maxAttempts = RunResult::MAX_ATTEMPTS;
@@ -237,13 +358,154 @@ class DistillerModel extends BaseDatabaseModel
             ->from($db->quoteName('#__translations_feedback'))
             ->where($db->quoteName('status') . ' = :status')
             ->where($db->quoteName('attempts') . ' < :maxAttempts')
-            ->where($db->quoteName('attempts') . ($retried ? ' > 0' : ' = 0'))
-            ->order([$db->quoteName('created') . ' ASC', $db->quoteName('id') . ' ASC'])
+            ->order(
+                [
+                    $db->quoteName('attempts') . ' DESC',
+                    $db->quoteName('target_language') . ' ASC',
+                    $db->quoteName('created') . ' ASC',
+                    $db->quoteName('id') . ' ASC',
+                ]
+            )
             ->bind(':status', $status, ParameterType::STRING)
             ->bind(':maxAttempts', $maxAttempts, ParameterType::INTEGER);
-        $db->setQuery($query, 0, $batchSize);
+
+        if ($tried !== []) {
+            $query->whereNotIn($db->quoteName('id'), $tried);
+        }
+
+        $db->setQuery($query, 0, $requestSize);
 
         return $db->loadObjectList() ?: [];
+    }
+
+    /**
+     * Choose the rows of the next request from the candidates.
+     *
+     * A request holds rows of one target language that have had the same number of attempts:
+     * as many as the request size allows - half of it for a second attempt, one for the last -
+     * and as long as their estimated size fits the input budget. The first row always goes, so a
+     * correction larger than the budget is sent on its own rather than never.
+     *
+     * @param   object[]  $candidates   The candidate rows, in the order they should be sent.
+     * @param   integer   $requestSize  The most corrections in one request.
+     *
+     * @return  object[]  The rows of the request, none when there are no candidates.
+     *
+     * @since   1.2.0
+     */
+    private static function selectRequest(array $candidates, int $requestSize): array
+    {
+        if ($candidates === []) {
+            return [];
+        }
+
+        $attempts = (int) ($candidates[0]->attempts ?? 0);
+        $language = (string) $candidates[0]->target_language;
+        $limit    = RunResult::requestLimit($requestSize, $attempts);
+        $budget   = (self::INPUT_TOKEN_BUDGET - self::CONTEXT_RESERVE_TOKENS) * self::CHARS_PER_TOKEN;
+        $selected = [];
+        $used     = 0;
+
+        foreach ($candidates as $row) {
+            if ((int) ($row->attempts ?? 0) !== $attempts || (string) $row->target_language !== $language) {
+                continue;
+            }
+
+            $size = self::estimatedSize($row);
+
+            if ($selected !== [] && (\count($selected) >= $limit || $used + $size > $budget)) {
+                break;
+            }
+
+            $selected[] = $row;
+            $used      += $size;
+        }
+
+        return $selected;
+    }
+
+    /**
+     * Estimate how many characters a feedback row adds to a request.
+     *
+     * The texts are counted as they will be sent, excerpts included, with a quarter on top for the
+     * diff and the JSON around them.
+     *
+     * @param   object  $row  The feedback row.
+     *
+     * @return  integer  The estimated characters.
+     *
+     * @since   1.2.0
+     */
+    private static function estimatedSize(object $row): int
+    {
+        $texts = self::excerpts(
+            (string) ($row->source_text ?? ''),
+            (string) ($row->machine_draft ?? ''),
+            (string) ($row->human_correction ?? '')
+        );
+
+        return (int) ceil(array_sum(array_map('mb_strlen', $texts)) * 1.25);
+    }
+
+    /**
+     * Cut a long correction down to the parts around its changes.
+     *
+     * An article is stored as one feedback row holding the whole text three times, while what
+     * the distiller learns from is the change. When any of the three texts is long, all three
+     * are split on their block elements; when they have the same blocks, only the blocks where
+     * the correction differs from the draft are sent, with the source block in the same place.
+     * Otherwise, and for short texts such as language strings, the texts are sent whole.
+     *
+     * @param   string  $source      The source text.
+     * @param   string  $draft       The machine draft.
+     * @param   string  $correction  The human correction.
+     *
+     * @return  string[]  The source, draft and correction to send.
+     *
+     * @since   1.2.0
+     */
+    private static function excerpts(string $source, string $draft, string $correction): array
+    {
+        $whole = [$source, $draft, $correction];
+
+        if (max(array_map('mb_strlen', $whole)) <= self::EXCERPT_THRESHOLD) {
+            return $whole;
+        }
+
+        $split = static fn(string $text): array => preg_split(
+            '/(?=<(?:p|li|h[1-6]|td|blockquote|div)\b)/i',
+            $text,
+            -1,
+            PREG_SPLIT_NO_EMPTY
+        ) ?: [$text];
+
+        $sourceBlocks     = $split($source);
+        $draftBlocks      = $split($draft);
+        $correctionBlocks = $split($correction);
+        $count            = \count($draftBlocks);
+
+        if ($count < 2 || \count($sourceBlocks) !== $count || \count($correctionBlocks) !== $count) {
+            return $whole;
+        }
+
+        $changed = [];
+
+        foreach ($draftBlocks as $index => $block) {
+            if (trim($block) !== trim($correctionBlocks[$index])) {
+                $changed[] = $index;
+            }
+        }
+
+        if ($changed === []) {
+            return $whole;
+        }
+
+        $pick = static fn(array $blocks): string => implode(
+            "\n…\n",
+            array_map(static fn(int $index): string => trim($blocks[$index]), $changed)
+        );
+
+        return [$pick($sourceBlocks), $pick($draftBlocks), $pick($correctionBlocks)];
     }
 
     /**
@@ -268,44 +530,6 @@ class DistillerModel extends BaseDatabaseModel
         $db->setQuery($query);
 
         return (int) $db->loadResult();
-    }
-
-    /**
-     * Split a run's rows into requests, one target language per request.
-     *
-     * A row that failed before goes in a smaller request: half the batch size on its second
-     * attempt, alone on its last. The rows that failed most come first.
-     *
-     * @param   object[]  $feedback   The feedback rows.
-     * @param   integer   $batchSize  The size of a request of untried rows.
-     *
-     * @return  array  The requests, each a list of rows for one target language.
-     *
-     * @since   1.1.0
-     */
-    private function requestBatches(array $feedback, int $batchSize): array
-    {
-        $groups = [];
-
-        foreach ($feedback as $row) {
-            $groups[(int) ($row->attempts ?? 0)][(string) $row->target_language][] = $row;
-        }
-
-        krsort($groups);
-
-        $requests = [];
-
-        foreach ($groups as $attempts => $byLanguage) {
-            $limit = RunResult::requestLimit($batchSize, $attempts);
-
-            foreach ($byLanguage as $rows) {
-                foreach (array_chunk($rows, $limit) as $request) {
-                    $requests[] = $request;
-                }
-            }
-        }
-
-        return $requests;
     }
 
     /**
@@ -749,6 +973,12 @@ class DistillerModel extends BaseDatabaseModel
             'target_term'          => $this->nullableTerm($candidate['target_term'] ?? null),
             'search_keywords'      => (string) ($candidate['search_keywords'] ?? ''),
         ];
+
+        // A provider sees only the rules that fit its corrections, so it can offer as new a rule
+        // that already exists. Such a rule refines the existing one instead of duplicating it.
+        if ($existingId === 0) {
+            $existingId = RuleMerger::findSame($this->getDatabase(), $data);
+        }
 
         if ($existingId > 0 && $table->load($existingId)) {
             // Refine in place: overlay the provider's improved wording, accumulate the evidence,

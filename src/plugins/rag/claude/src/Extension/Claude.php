@@ -63,12 +63,24 @@ final class Claude extends CMSPlugin implements SubscriberInterface
     private const MAX_TOKENS = 16000;
 
     /**
-     * Seconds to wait for the API, generous because distilling a batch takes a while.
+     * Seconds to wait for the API when the plugin sets none, generous because distilling a
+     * batch takes a while.
      *
      * @var    integer
-     * @since  0.4.0
+     * @since  1.2.0
      */
-    private const TIMEOUT = 120;
+    private const DEFAULT_TIMEOUT = 300;
+
+    /**
+     * The effort levels a request may ask for. Lower effort means less thinking: measured on
+     * language-pack corrections, low effort cost a sixth of high effort per correction and kept
+     * the rules that more than one correction supports, while high effort added mostly
+     * single-correction rules.
+     *
+     * @var    string[]
+     * @since  1.2.0
+     */
+    private const EFFORTS = ['low', 'medium', 'high'];
 
     /**
      * The HTTP client used to call the API.
@@ -214,7 +226,7 @@ final class Claude extends CMSPlugin implements SubscriberInterface
                     ),
                 ],
             ],
-            'output_config' => ['format' => $this->standardFormsResponseFormat()],
+            'output_config' => $this->outputConfig($this->standardFormsResponseFormat()),
         ];
 
         return $this->parseNormalisation($this->callApi($payload, $apiKey));
@@ -341,10 +353,53 @@ final class Claude extends CMSPlugin implements SubscriberInterface
                     ),
                 ],
             ],
-            'output_config' => ['format' => $this->rulesResponseFormat()],
+            'output_config' => $this->outputConfig($this->rulesResponseFormat()),
         ];
 
         return $this->parseDistillation($this->callApi($payload, $apiKey));
+    }
+
+    /**
+     * The output settings for a request: the reply format, and the effort the plugin is set to
+     * when the model takes one.
+     *
+     * @param   array  $format  The structured-output format.
+     *
+     * @return  array  The output_config of the request.
+     *
+     * @since   1.2.0
+     */
+    private function outputConfig(array $format): array
+    {
+        return self::outputConfigFor(
+            $format,
+            (string) $this->params->get('model', 'claude-sonnet-5'),
+            (string) $this->params->get('effort', 'low')
+        );
+    }
+
+    /**
+     * The output settings for a request to the given model at the given effort.
+     *
+     * Haiku does not accept an effort level, so it is left out for that model.
+     *
+     * @param   array   $format  The structured-output format.
+     * @param   string  $model   The model the request goes to.
+     * @param   string  $effort  The effort level.
+     *
+     * @return  array  The output_config of the request.
+     *
+     * @since   1.2.0
+     */
+    private static function outputConfigFor(array $format, string $model, string $effort): array
+    {
+        $config = ['format' => $format];
+
+        if (\in_array($effort, self::EFFORTS, true) && !str_starts_with($model, 'claude-haiku')) {
+            $config['effort'] = $effort;
+        }
+
+        return $config;
     }
 
     /**
@@ -368,7 +423,12 @@ final class Claude extends CMSPlugin implements SubscriberInterface
         ];
 
         try {
-            $response = $this->http->post(self::ENDPOINT, json_encode($payload), $headers, self::TIMEOUT);
+            $response = $this->http->post(
+                self::ENDPOINT,
+                json_encode($payload),
+                $headers,
+                max(10, (int) $this->params->get('timeout', self::DEFAULT_TIMEOUT))
+            );
         } catch (\RuntimeException $e) {
             throw new \RuntimeException('Could not reach the Claude API: ' . $e->getMessage(), 0, $e);
         }
@@ -417,20 +477,24 @@ final class Claude extends CMSPlugin implements SubscriberInterface
         return \sprintf(
             'You are an expert reviewer building a reusable guide for translating Joomla content from %1$s to %2$s.'
             . ' You receive a JSON object with "corrections" and "existing_rules". Each correction has the source text'
-            . ' (%1$s), the machine draft (%2$s), the human correction (%2$s), a focused "diff" of the change, and an'
-            . ' "id". In the diff, "[term]" marks a single-word change (usually terminology), "[phrase]" marks a'
+            . ' (%1$s), the machine draft (%2$s), the human correction (%2$s), a focused "diff" of the change, an'
+            . ' "id", and "occurrences": how many places the same correction stands for (1 unless the same string'
+            . ' occurs more than once). A long text may be sent as excerpts around its changes. In the diff, "[term]" marks a single-word change (usually terminology), "[phrase]" marks a'
             . ' multi-word change (often tone or phrasing), and "[added]"/"[removed]" mark insertions and deletions.'
             . ' Each existing rule has an "id". Distil only genuine, reusable rules that would help translate future'
             . ' content the same way, each classified as "terminology" (a source term should be translated a certain'
             . ' way), "style" (a tone or phrasing preference), or "preservation" (a term or brand to leave'
             . ' untranslated, which includes a correction that puts the source term back unchanged).'
             . ' Ignore typos, nonsense and one-off content edits; if nothing is reusable, return an empty'
-            . ' list. Prefer refining an existing rule over adding a near-duplicate: to refine one return it with its'
+            . ' list. Never turn a single sentence into a rule: a rule that only says how to translate one whole'
+            . ' sentence is not reusable, so state the term or the pattern behind it instead, or leave it out.'
+            . ' Give a confidence above 0.6 only when at least two corrections support the rule, counting each'
+            . ' correction\'s "occurrences". Prefer refining an existing rule over adding a near-duplicate: to refine one return it with its'
             . ' "id" and a raised "confidence", and use "id": 0 for a new rule. Put the term pair in'
             . ' "source_term"/"target_term" for terminology; for preservation put the term to keep in "source_term"'
             . ' only; leave them empty for style. "rule_text" states the rule in plain language as it will be given to the'
             . ' translation model; "confidence" is between 0 and 1 (about 0.9 or higher for a well-established'
-            . ' convention, 0.5 to 0.7 for a plausible pattern seen once);'
+            . ' convention, 0.5 to 0.6 for a plausible pattern seen once);'
             . ' "search_keywords" holds only %1$s words, because the rule is matched against the source text'
             . ' before it is translated;'
             . ' "source_feedback_ids" lists the correction ids the rule came from. Respond with only the JSON'

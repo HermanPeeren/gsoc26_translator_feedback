@@ -208,6 +208,101 @@ final class LanguagePackSeedTest extends TestCase
     }
 
     /**
+     * A text that occurs in several language files is translated once, for all of them.
+     *
+     * The site, administrator and API files repeat many strings, and a pack translates every
+     * repeat the same way; in the nl-NL pack 38% of the strings are such repeats.
+     *
+     * @return  void
+     *
+     * @since   1.2.0
+     */
+    public function testARepeatedTextIsTranslatedOnce(): void
+    {
+        $units = self::units(
+            [
+                'site/joomla.ini#JSAVE'          => self::pair('site/joomla.ini', 'JSAVE', 'Save'),
+                'administrator/joomla.ini#JSAVE' => self::pair('administrator/joomla.ini', 'JSAVE', 'Save'),
+                'api/joomla.ini#JAPPLY'          => self::pair('api/joomla.ini', 'JAPPLY', 'Save'),
+                'site/joomla.ini#JCANCEL'        => self::pair('site/joomla.ini', 'JCANCEL', 'Cancel'),
+            ]
+        );
+
+        $this->assertSame(['Save', 'Cancel'], array_column($units, 'source'));
+        $this->assertCount(3, $units[0]['pairs'], 'The one translation stands for all three strings');
+        $this->assertSame('JSAVE', $units[0]['key'], 'The first string gives the key that goes with the text');
+    }
+
+    /**
+     * A repeated text writes one feedback row per distinct pack translation, counting its strings.
+     *
+     * @return  void
+     *
+     * @since   1.2.0
+     */
+    public function testEachDistinctPackTranslationIsCountedOnce(): void
+    {
+        $unit = [
+            'pairs' => [
+                ['approved' => 'Opslaan'],
+                ['approved' => 'Opslaan '],
+                ['approved' => 'Bewaren'],
+            ],
+        ];
+
+        $method = new ReflectionMethod(Seeder::class, 'approvedTranslations');
+        $method->setAccessible(true);
+
+        $this->assertSame(['Opslaan' => 2, 'Bewaren' => 1], $method->invoke(null, $unit));
+    }
+
+    /**
+     * A string is seeded once, and again only when a new pack version changes its source text or
+     * its translation.
+     *
+     * Without the fingerprint a changed string would count as done for good, and what the
+     * language team changed in a new pack would never be learned from.
+     *
+     * @return  void
+     *
+     * @since   1.2.0
+     */
+    public function testOnlyNewAndChangedStringsArePending(): void
+    {
+        $pairs = [
+            'site/a.ini#NEW'       => self::pair('site/a.ini', 'NEW', 'New'),
+            'site/a.ini#SAME'      => self::pair('site/a.ini', 'SAME', 'Same'),
+            'site/a.ini#CHANGED'   => self::pair('site/a.ini', 'CHANGED', 'Changed'),
+            'site/a.ini#FAILED'    => self::pair('site/a.ini', 'FAILED', 'Failed'),
+            'site/a.ini#OLD'       => self::pair('site/a.ini', 'OLD', 'Old'),
+            'site/a.ini#OLD_RETRY' => self::pair('site/a.ini', 'OLD_RETRY', 'Old retry'),
+        ];
+
+        $states = [
+            'site/a.ini#SAME'      => ['status' => 'seeded', 'attempts' => 1, 'fingerprint' => self::fingerprint($pairs['site/a.ini#SAME'])],
+            'site/a.ini#CHANGED'   => ['status' => 'seeded', 'attempts' => 1, 'fingerprint' => sha1('what it said before')],
+            'site/a.ini#FAILED'    => ['status' => 'failed', 'attempts' => 3, 'fingerprint' => sha1('what it said before')],
+            'site/a.ini#OLD'       => ['status' => 'seeded', 'attempts' => 1, 'fingerprint' => ''],
+            'site/a.ini#OLD_RETRY' => ['status' => 'retry', 'attempts' => 1, 'fingerprint' => ''],
+        ];
+
+        $method = new ReflectionMethod(Seeder::class, 'classify');
+        $method->setAccessible(true);
+        $plan = $method->invoke(null, $pairs, $states);
+
+        $this->assertSame(
+            ['site/a.ini#OLD_RETRY', 'site/a.ini#NEW', 'site/a.ini#CHANGED', 'site/a.ini#FAILED'],
+            array_keys($plan['pending']),
+            'Retries first, then new and changed strings; unchanged and old seeded strings are done'
+        );
+        $this->assertSame(['site/a.ini#CHANGED', 'site/a.ini#FAILED'], array_keys($plan['reopen']));
+        $this->assertSame(0, $plan['pending']['site/a.ini#FAILED']['attempts'], 'A changed string starts with fresh attempts');
+        $this->assertTrue($plan['pending']['site/a.ini#CHANGED']['recorded'], 'A changed string already has a record');
+        $this->assertFalse($plan['pending']['site/a.ini#NEW']['recorded']);
+        $this->assertSame(['site/a.ini#OLD', 'site/a.ini#OLD_RETRY'], array_keys($plan['backfill']), 'Old records get a fingerprint');
+    }
+
+    /**
      * Nothing left to seed is no request at all.
      *
      * @return  void
@@ -253,6 +348,40 @@ final class LanguagePackSeedTest extends TestCase
         $method = new ReflectionMethod(Seeder::class, 'requestChunks');
         $method->setAccessible(true);
 
-        return $method->invoke($seeder, $pairs);
+        return $method->invoke($seeder, self::units($pairs), Seeder::DEFAULT_REQUEST_SIZE);
+    }
+
+    /**
+     * The fingerprint the seeder records for a pair.
+     *
+     * @param   array  $pair  The pair.
+     *
+     * @return  string  The fingerprint.
+     *
+     * @since   1.2.0
+     */
+    private static function fingerprint(array $pair): string
+    {
+        $method = new ReflectionMethod(Seeder::class, 'fingerprint');
+        $method->setAccessible(true);
+
+        return $method->invoke(null, $pair);
+    }
+
+    /**
+     * Group pending pairs into the units a run translates: one per distinct source text.
+     *
+     * @param   array  $pairs  The pending pairs, keyed by string id.
+     *
+     * @return  array  The units.
+     *
+     * @since   1.2.0
+     */
+    private static function units(array $pairs): array
+    {
+        $method = new ReflectionMethod(Seeder::class, 'units');
+        $method->setAccessible(true);
+
+        return $method->invoke(null, $pairs);
     }
 }

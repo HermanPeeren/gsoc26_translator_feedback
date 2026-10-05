@@ -60,6 +60,16 @@ its translations stay out of date without telling anyone.
      **Model**.
    - **RAG - Claude** distils rules from feedback and works out the standard form of words. It
      has its own **API key** and **Model**, which can differ from the translation plugin's.
+
+   Both Claude plugins also have:
+
+   - **Effort**: how much the model may think before it answers; **Low** by default. Thinking
+     is paid for like the answer itself. Measured on language-pack corrections, distilling at
+     **High** cost about six times as much per correction as at **Low** and added mostly rules
+     that rest on a single correction; translation came out the same at either level. Haiku
+     takes no effort level, so the setting is ignored for it.
+   - **Timeout (seconds)**: how long to wait for an answer before the request counts as failed;
+     300 by default. A run started over the web can be cut off earlier by the web server.
    - **Task - Translations Translate** and **Task - Translations Distiller** are needed only if
      you want to run the work on a schedule (see "Doing it on a schedule").
 3. Set the source language in the component's Options, as described next.
@@ -281,14 +291,70 @@ Both are optional. Everything they do can also be done by hand: translate from a
 and distil with the **Distil Now** button in the Rules view. How many items each run handles
 is a setting on the task, so you can keep a run short on a busy site.
 
+The distil task has two settings:
+
+- **Corrections per Request** (50 by default): how many feedback rows go to the provider in
+  one request. Every request also carries the existing rules as context, about ten thousand
+  tokens, so a request with only a few corrections pays mostly for that context. Long rows,
+  such as whole articles, go in fewer per request, and only the paragraphs that changed are
+  sent.
+- **Time per Run (seconds)**: a run keeps sending requests until this time is used up, and
+  stops before a request that would probably not finish in time; the next run carries on.
+  With **0** a run takes 240 seconds when the scheduler runs from the command line, and 25
+  seconds when it runs over the web.
+
 Every request to the provider is paid for, so a request that fails is not repeated without
 end. A feedback item whose request fails is tried again in a later run, in a request half the
 size, then on its own; after its third failed attempt it is set aside with the status `failed`
-and the last error, and no run sends it again. The attempt is counted before the request is sent, so this holds even
-when a run is cut off while it waits for the provider. A run only asks to be repeated straight
-away when it got something done; a run that only failed waits for the task's next scheduled
-time. The results of each request are saved as soon as it is answered, so a run that stops
-part-way keeps everything it finished.
+and the last error, and no run sends it again. The attempt is counted before the request is
+sent, so this holds even when a run is cut off while it waits for the provider. A run stops
+after two failed requests in a row, because the provider is then most likely unreachable. A
+run only asks to be repeated straight away when it got something done; a run that only failed
+waits for the task's next scheduled time. The results of each request are saved as soon as it
+is answered, so a run that stops part-way keeps everything it finished.
+
+### Running the scheduler
+
+Joomla starts scheduled tasks in one of three ways. Choose one in **System, Manage, Scheduled
+Tasks, Options**:
+
+- **From the command line, with cron (recommended).** Have your host run this every minute:
+
+  ```
+  php /path/to/your/site/cli/joomla.php scheduler:run --all
+  ```
+
+  Without `--all` only one due task runs per minute, so the seed and distil tasks take turns.
+  A single task can be run with `scheduler:run --id=<task id>`. On the command line PHP has
+  no time limit, and a run uses its full time budget.
+- **Web cron**, for hosting without command-line cron. Enable **Web Cron** in the Options and
+  let an external cron service call the URL shown there every minute. Each call is a short
+  web request, so leave **Time per Run** at 0 (25 seconds). If the host still cuts requests
+  off, lower **Corrections per Request** to 25.
+- **Lazy scheduler**: tasks run when someone visits the site. Fine for small amounts of work,
+  too slow for a whole language pack.
+
+Keep the **Task Timeout (seconds)** in the Options (300 by default) above the **Time per
+Run** of your tasks. A task that runs longer than that timeout can be started a second time
+while the first run is still busy.
+
+### Maintenance tasks
+
+Three more task types fix things after the fact. Create them as tasks without a schedule and
+start them with **Run Test** in the list of Scheduled Tasks:
+
+- **Retry Failed Translator Feedback** gives the feedback rows set aside as `failed` a new set
+  of attempts. Run it once the cause is fixed, such as an invalid model or an empty credit
+  balance.
+- **Retry Failed Language Pack Strings** does the same for the seed task's strings.
+- **Forget a Seeded Language** undoes the seeding of one language, so its pack can be seeded
+  again from scratch (see "Seeding a language again" below).
+- **Merge Duplicate Translation Rules** merges terminology and preservation rules with the same
+  term and the same translation, for one language or all. The oldest rule of each set is kept;
+  it takes over the evidence and the highest confidence of the others, and is published when
+  one of them was. The others go to the trash, so they can still be restored. New rules are
+  checked against the existing ones when they are distilled, so this is mostly needed for rules
+  distilled before version 1.2.0.
 
 ## Starting from your language pack
 
@@ -307,18 +373,52 @@ The seed task is optional and a separate download:
 3. In **System, Manage, Scheduled Tasks**, create a **Seed Translation Rules From a Language
    Pack** task and set:
    - **Language**: the installed language to learn from.
-   - **Batch Size**: the most strings seeded in one run (50 by default). A run that seeded
-     strings and leaves some for later is followed straight away by the next one, so a whole
-     pack is worked through over several runs.
+   - **Strings per Request** (25 by default): how many texts go to the provider in one request.
+   - **Time per Run (seconds)**: as for the distil task; 0 means 240 seconds from the command
+     line and 25 seconds over the web. A run that seeded strings and leaves some for later is
+     followed straight away by the next one, so a whole pack is worked through over several
+     runs.
    - **Language Files**: a comma separated list such as `com_content.ini`, or empty to read the
      whole pack.
 
 The task translates through the translation plugin, so that plugin must be enabled and have
 its key. A string that has been seeded is not sent again, so running the task again does not
-pay for it twice. A string the machine already translates the way the pack does writes no
-feedback, because there is nothing to learn from it. Like the distiller, the seed task tries a
-string that failed again in a smaller request, and sets it aside as `failed` after its third
-attempt.
+pay for it twice. Seeding is incremental: when a new version of the language pack adds files or
+strings, the next run sends only those. A string whose English text or whose translation in the
+pack has changed since it was seeded is sent again too, so what the language team changed is
+learned as well; the seed task notices this by a fingerprint it keeps of both texts. Strings
+seeded before version 1.2.0 get that fingerprint the first time a run sees them, without being
+sent again. A text that occurs in several language files - the site, administrator and
+API files repeat many strings - is translated once for all of them, and the feedback says how
+many strings it stands for. A string the machine already translates the way the pack does
+writes no feedback, because there is nothing to learn from it. Like the distiller, the seed
+task tries a string that failed again in a smaller request, and sets it aside as `failed` after
+its third attempt.
+
+### Seeding a language again
+
+A string that has been seeded is never sent again, so to seed a pack anew - for instance with a
+better model, or with the cheaper and cleaner distillation of version 1.2.0 - first forget the
+earlier seeding:
+
+1. Create a **Forget a Seeded Language** task, choose the **Language**, save it, and start it
+   with **Run Test**.
+   - The record of which strings were seeded, and the feedback the seed task wrote for that
+     language, are **deleted**. This cannot be undone.
+   - The **unpublished** rules learned only from the pack are moved to the **trash**, where they
+     can still be restored.
+   - **Published** rules are kept, because someone reviewed them, unless you switch on **Also
+     Trash Published Rules**. Be very careful with that option: published rules steer every new
+     translation into the language, and with it on all published rules learned from the pack
+     go to the trash and stop being used at once. They can be restored from the trash in the
+     Rules view, as long as the trash has not been emptied.
+   - Feedback and rules that came from translators are always kept.
+2. Run the seed task for that language again, and let the distil task follow.
+
+Seed version 1.2.0 needs version 1.2.0 of the package, because it records how many strings a
+feedback row stands for. For a whole core language pack, plan for roughly an hour and a half
+of seeding and distilling with the command-line scheduler. The API cost was estimated at
+$8-12 per pack with Claude Sonnet at low effort; it depends on the language and the model.
 
 ## Translators working from the site
 

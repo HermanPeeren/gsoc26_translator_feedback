@@ -17,6 +17,7 @@ namespace Joomla\Plugin\Task\TranslationsSeed\Extension;
 use Joomla\CMS\Component\ComponentHelper;
 use Joomla\CMS\Plugin\CMSPlugin;
 use Joomla\Component\Translations\Administrator\Helper\RunResult;
+use Joomla\Component\Translations\Administrator\Helper\TimeBudget;
 use Joomla\Component\Scheduler\Administrator\Event\ExecuteTaskEvent;
 use Joomla\Component\Scheduler\Administrator\Task\Status;
 use Joomla\Component\Scheduler\Administrator\Traits\TaskPluginTrait;
@@ -49,6 +50,15 @@ final class TranslationsSeed extends CMSPlugin implements SubscriberInterface
             'langConstPrefix' => 'PLG_TASK_TRANSLATIONSSEED',
             'form'            => 'seed',
             'method'          => 'seed',
+        ],
+        'translationsseed.resetfailed' => [
+            'langConstPrefix' => 'PLG_TASK_TRANSLATIONSSEED_RESETFAILED',
+            'method'          => 'resetFailed',
+        ],
+        'translationsseed.forget' => [
+            'langConstPrefix' => 'PLG_TASK_TRANSLATIONSSEED_FORGET',
+            'form'            => 'forget',
+            'method'          => 'forget',
         ],
     ];
 
@@ -88,7 +98,8 @@ final class TranslationsSeed extends CMSPlugin implements SubscriberInterface
     protected function seed(ExecuteTaskEvent $event): int
     {
         $params         = $event->getArgument('params');
-        $batchSize      = max(1, (int) ($params->batch ?? 50));
+        $requestSize    = max(1, (int) ($params->request_size ?? Seeder::DEFAULT_REQUEST_SIZE));
+        $budget         = new TimeBudget((int) ($params->time_budget ?? 0));
         $targetLanguage = (string) ($params->target_language ?? '');
         $fileNames      = array_filter(array_map('trim', explode(',', (string) ($params->files ?? ''))));
         $language       = $this->getApplication()->getLanguage();
@@ -118,7 +129,7 @@ final class TranslationsSeed extends CMSPlugin implements SubscriberInterface
         $seeder = new Seeder($this->getDatabase(), $this->getApplication()->getDispatcher());
 
         try {
-            $result = $seeder->seed($sourceLanguage, $targetLanguage, $batchSize, $fileNames);
+            $result = $seeder->seed($sourceLanguage, $targetLanguage, $requestSize, $budget, $fileNames);
         } catch (\Throwable $e) {
             return $this->knockout($e->getMessage());
         }
@@ -163,6 +174,63 @@ final class TranslationsSeed extends CMSPlugin implements SubscriberInterface
             default:
                 return Status::OK;
         }
+    }
+
+    /**
+     * Give the strings that were set aside as failed a new set of attempts.
+     *
+     * @param   ExecuteTaskEvent  $event  The onExecuteTask event.
+     *
+     * @return  integer  The task exit status.
+     *
+     * @since   1.2.0
+     */
+    protected function resetFailed(ExecuteTaskEvent $event): int
+    {
+        try {
+            $reset = (new Seeder($this->getDatabase(), $this->getApplication()->getDispatcher()))->resetFailed();
+        } catch (\Throwable $e) {
+            return $this->knockout($e->getMessage());
+        }
+
+        $this->logTask(\sprintf($this->getApplication()->getLanguage()->_('PLG_TASK_TRANSLATIONSSEED_RESETFAILED_LOG'), $reset));
+
+        return Status::OK;
+    }
+
+    /**
+     * Forget what was seeded for a language, so its pack can be seeded again from scratch.
+     *
+     * @param   ExecuteTaskEvent  $event  The onExecuteTask event.
+     *
+     * @return  integer  The task exit status.
+     *
+     * @since   1.2.0
+     */
+    protected function forget(ExecuteTaskEvent $event): int
+    {
+        $params           = $event->getArgument('params');
+        $targetLanguage   = (string) ($params->target_language ?? '');
+        $includePublished = (bool) ($params->include_published ?? false);
+
+        try {
+            $counts = (new Seeder($this->getDatabase(), $this->getApplication()->getDispatcher()))
+                ->forget($targetLanguage, $includePublished);
+        } catch (\Throwable $e) {
+            return $this->knockout($e->getMessage());
+        }
+
+        $this->logTask(
+            \sprintf(
+                $this->getApplication()->getLanguage()->_('PLG_TASK_TRANSLATIONSSEED_FORGET_LOG'),
+                $targetLanguage,
+                $counts['strings'],
+                $counts['feedback'],
+                $counts['rules']
+            )
+        );
+
+        return Status::OK;
     }
 
     /**

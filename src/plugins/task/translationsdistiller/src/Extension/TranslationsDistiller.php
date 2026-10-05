@@ -21,15 +21,16 @@ use Joomla\Component\Scheduler\Administrator\Event\ExecuteTaskEvent;
 use Joomla\Component\Scheduler\Administrator\Task\Status;
 use Joomla\Component\Scheduler\Administrator\Traits\TaskPluginTrait;
 use Joomla\Component\Translations\Administrator\Helper\RunResult;
+use Joomla\Component\Translations\Administrator\Helper\TimeBudget;
 use Joomla\Component\Translations\Administrator\Model\DistillerModel;
 use Joomla\Event\SubscriberInterface;
 
 /**
  * Task plugin that runs the rules distiller on a schedule.
  *
- * A thin trigger: it boots the Translations component and runs the distiller over one
- * batch of pending feedback per execution, resuming until the backlog is drained. The
- * distillation itself lives in the component.
+ * A thin trigger: it boots the Translations component and runs the distiller over pending
+ * feedback for as long as the run's time budget allows, resuming until the backlog is drained.
+ * The distillation itself lives in the component.
  *
  * @since  0.4.0
  */
@@ -48,6 +49,15 @@ final class TranslationsDistiller extends CMSPlugin implements SubscriberInterfa
             'langConstPrefix' => 'PLG_TASK_TRANSLATIONSDISTILLER',
             'form'            => 'distiller',
             'method'          => 'distill',
+        ],
+        'translationsdistiller.resetfailed' => [
+            'langConstPrefix' => 'PLG_TASK_TRANSLATIONSDISTILLER_RESETFAILED',
+            'method'          => 'resetFailed',
+        ],
+        'translationsdistiller.mergerules' => [
+            'langConstPrefix' => 'PLG_TASK_TRANSLATIONSDISTILLER_MERGERULES',
+            'form'            => 'mergerules',
+            'method'          => 'mergeRules',
         ],
     ];
 
@@ -76,7 +86,7 @@ final class TranslationsDistiller extends CMSPlugin implements SubscriberInterfa
     }
 
     /**
-     * Run the rules distiller over one batch of pending feedback.
+     * Run the rules distiller over pending feedback until the run's time budget is used up.
      *
      * @param   ExecuteTaskEvent  $event  The onExecuteTask event.
      *
@@ -86,18 +96,13 @@ final class TranslationsDistiller extends CMSPlugin implements SubscriberInterfa
      */
     protected function distill(ExecuteTaskEvent $event): int
     {
-        $params    = $event->getArgument('params');
-        $batchSize = max(1, (int) ($params->batch ?? 10));
-        $language  = $this->getApplication()->getLanguage();
-
-        /** @var ComponentInterface&MVCFactoryServiceInterface $component */
-        $component = $this->getApplication()->bootComponent('com_translations');
-
-        /** @var DistillerModel $model */
-        $model = $component->getMVCFactory()->createModel('Distiller', 'Administrator', ['ignore_request' => true]);
+        $params      = $event->getArgument('params');
+        $requestSize = max(1, (int) ($params->request_size ?? DistillerModel::DEFAULT_REQUEST_SIZE));
+        $budget      = new TimeBudget((int) ($params->time_budget ?? 0));
+        $language    = $this->getApplication()->getLanguage();
 
         try {
-            $result = $model->distill($batchSize);
+            $result = $this->distillerModel()->distill($requestSize, $budget);
         } catch (\Throwable $e) {
             return $this->knockout($e->getMessage());
         }
@@ -141,6 +146,70 @@ final class TranslationsDistiller extends CMSPlugin implements SubscriberInterfa
             default:
                 return Status::OK;
         }
+    }
+
+    /**
+     * Give the feedback rows that were set aside as failed a new set of attempts.
+     *
+     * @param   ExecuteTaskEvent  $event  The onExecuteTask event.
+     *
+     * @return  integer  The task exit status.
+     *
+     * @since   1.2.0
+     */
+    protected function resetFailed(ExecuteTaskEvent $event): int
+    {
+        try {
+            $reset = $this->distillerModel()->resetFailed();
+        } catch (\Throwable $e) {
+            return $this->knockout($e->getMessage());
+        }
+
+        $this->logTask(\sprintf($this->getApplication()->getLanguage()->_('PLG_TASK_TRANSLATIONSDISTILLER_RESETFAILED_LOG'), $reset));
+
+        return Status::OK;
+    }
+
+    /**
+     * Merge the existing rules that say the same thing.
+     *
+     * @param   ExecuteTaskEvent  $event  The onExecuteTask event.
+     *
+     * @return  integer  The task exit status.
+     *
+     * @since   1.2.0
+     */
+    protected function mergeRules(ExecuteTaskEvent $event): int
+    {
+        $language = (string) ($event->getArgument('params')->target_language ?? '');
+
+        try {
+            $merged = $this->distillerModel()->mergeDuplicateRules($language);
+        } catch (\Throwable $e) {
+            return $this->knockout($e->getMessage());
+        }
+
+        $this->logTask(\sprintf($this->getApplication()->getLanguage()->_('PLG_TASK_TRANSLATIONSDISTILLER_MERGERULES_LOG'), $merged));
+
+        return Status::OK;
+    }
+
+    /**
+     * Boot the Translations component and create its distiller model.
+     *
+     * @return  DistillerModel
+     *
+     * @since   1.2.0
+     */
+    private function distillerModel(): DistillerModel
+    {
+        /** @var ComponentInterface&MVCFactoryServiceInterface $component */
+        $component = $this->getApplication()->bootComponent('com_translations');
+
+        /** @var DistillerModel $model */
+        $model = $component->getMVCFactory()->createModel('Distiller', 'Administrator', ['ignore_request' => true]);
+
+        return $model;
     }
 
     /**
