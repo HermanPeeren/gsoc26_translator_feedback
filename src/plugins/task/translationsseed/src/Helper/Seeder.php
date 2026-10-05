@@ -244,10 +244,12 @@ class Seeder
      * The seeding records are removed, so the next run sends every string again; the feedback the
      * seed task wrote is removed, so old corrections are not distilled next to new ones; and the
      * unpublished rules learned only from the pack are trashed, where they can still be restored.
-     * A published rule was reviewed by someone, and feedback and rules from translators are not
-     * the seed task's, so those are left alone.
+     * A published rule was reviewed by someone, so it is trashed too only when that is asked for
+     * explicitly. Feedback and rules from translators are not the seed task's, so those are always
+     * left alone.
      *
-     * @param   string  $targetLanguage  The language to forget.
+     * @param   string   $targetLanguage    The language to forget.
+     * @param   boolean  $includePublished  Whether published rules learned from the pack are trashed too.
      *
      * @return  array  The numbers of strings forgotten, feedback rows deleted and rules trashed,
      *                 keyed strings, feedback and rules.
@@ -256,7 +258,7 @@ class Seeder
      *
      * @since   1.2.0
      */
-    public function forget(string $targetLanguage): array
+    public function forget(string $targetLanguage, bool $includePublished = false): array
     {
         if ($targetLanguage === '') {
             throw new \RuntimeException('No language is selected, so there is nothing to forget.');
@@ -284,18 +286,16 @@ class Seeder
             $this->db->setQuery($query)->execute();
             $counts['feedback'] = $this->db->getAffectedRows();
 
-            $trashed     = -2;
-            $unpublished = 0;
-            $query       = $this->db->getQuery(true)
+            $trashed = -2;
+            $query   = $this->db->getQuery(true)
                 ->update($this->db->quoteName('#__translations_rules'))
                 ->set($this->db->quoteName('state') . ' = :trashed')
                 ->where($this->db->quoteName('target_language') . ' = :targetLanguage')
                 ->where($this->db->quoteName('source_origin') . ' = :origin')
-                ->where($this->db->quoteName('state') . ' = :unpublished')
+                ->whereIn($this->db->quoteName('state'), $includePublished ? [0, 1] : [0])
                 ->bind(':trashed', $trashed, ParameterType::INTEGER)
                 ->bind(':targetLanguage', $targetLanguage, ParameterType::STRING)
-                ->bind(':origin', $origin, ParameterType::STRING)
-                ->bind(':unpublished', $unpublished, ParameterType::INTEGER);
+                ->bind(':origin', $origin, ParameterType::STRING);
             $this->db->setQuery($query)->execute();
             $counts['rules'] = $this->db->getAffectedRows();
 

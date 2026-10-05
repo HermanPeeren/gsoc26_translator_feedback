@@ -209,10 +209,13 @@ final class TranslationsSeed extends CMSPlugin implements SubscriberInterface
      */
     protected function forget(ExecuteTaskEvent $event): int
     {
-        $targetLanguage = (string) ($event->getArgument('params')->target_language ?? '');
+        $params           = $event->getArgument('params');
+        $targetLanguage   = (string) ($params->target_language ?? '');
+        $includePublished = (bool) ($params->include_published ?? false);
 
         try {
-            $counts = (new Seeder($this->getDatabase(), $this->getApplication()->getDispatcher()))->forget($targetLanguage);
+            $counts = (new Seeder($this->getDatabase(), $this->getApplication()->getDispatcher()))
+                ->forget($targetLanguage, $includePublished);
         } catch (\Throwable $e) {
             return $this->knockout($e->getMessage());
         }

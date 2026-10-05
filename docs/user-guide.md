@@ -402,8 +402,12 @@ earlier seeding:
      language, are **deleted**. This cannot be undone.
    - The **unpublished** rules learned only from the pack are moved to the **trash**, where they
      can still be restored.
-   - **Published** rules are kept, because someone reviewed them, and so are feedback and rules
-     that came from translators.
+   - **Published** rules are kept, because someone reviewed them, unless you switch on **Also
+     Trash Published Rules**. Be very careful with that option: published rules steer every new
+     translation into the language, and with it on all published rules learned from the pack
+     go to the trash and stop being used at once. They can be restored from the trash in the
+     Rules view, as long as the trash has not been emptied.
+   - Feedback and rules that came from translators are always kept.
 2. Run the seed task for that language again, and let the distil task follow.
 
 Seed version 1.2.0 needs version 1.2.0 of the package, because it records how many strings a
