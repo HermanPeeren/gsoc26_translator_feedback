@@ -124,6 +124,75 @@ final class TranslationProviderTest extends TestCase
     }
 
     /**
+     * Strings go out numbered, each with its key alongside as context.
+     *
+     * The reply then repeats only the numbers, not a long language constant per string, and the
+     * reply is the part of a request that costs most.
+     *
+     * @return  void
+     *
+     * @since   1.2.0
+     */
+    public function testStringsAreSentNumberedWithTheirKeyAsContext(): void
+    {
+        $this->assertSame(
+            [
+                '1' => ['key' => 'COM_CONTENT_SAVE_SUCCESS', 'text' => 'Article saved.'],
+                '2' => ['key' => 'title', 'text' => 'Welcome'],
+            ],
+            self::call('numberedStrings', [['COM_CONTENT_SAVE_SUCCESS' => 'Article saved.', 'title' => 'Welcome']])
+        );
+    }
+
+    /**
+     * Translations come back under the keys the strings were sent with, and an unanswered
+     * number is left out rather than shifting the others.
+     *
+     * @return  void
+     *
+     * @since   1.2.0
+     */
+    public function testANumberedReplyIsPutBackUnderTheCallersKeys(): void
+    {
+        $this->assertSame(
+            ['COM_A' => 'Eerste', 'COM_C' => 'Derde'],
+            self::call('keyedTranslation', [[1 => 'Eerste', 3 => 'Derde'], ['COM_A', 'COM_B', 'COM_C']])
+        );
+    }
+
+    /**
+     * A numbered reply round-trips: the numbers the schema asks for are the ones read back.
+     *
+     * @return  void
+     *
+     * @since   1.2.0
+     */
+    public function testANumberedReplyIsReadThroughTheSchemaItWasAskedFor(): void
+    {
+        $format = self::call('responseFormat', [['1', '2']]);
+        $read   = self::parseTranslation(self::reply(['1' => 'Opgeslagen', '2' => 'Welkom']), ['1', '2']);
+
+        $this->assertSame(['1', '2'], $format['schema']['required']);
+        $this->assertSame(['T1' => 'Opgeslagen', 'T2' => 'Welkom'], self::call('keyedTranslation', [$read, ['T1', 'T2']]));
+    }
+
+    /**
+     * The effort level goes into the request, except for a model that does not take one.
+     *
+     * @return  void
+     *
+     * @since   1.2.0
+     */
+    public function testTheEffortLevelIsSentToModelsThatTakeIt(): void
+    {
+        $format = ['type' => 'json_schema'];
+
+        $this->assertSame(['format' => $format, 'effort' => 'low'], self::call('outputConfigFor', [$format, 'claude-sonnet-5', 'low']));
+        $this->assertSame(['format' => $format], self::call('outputConfigFor', [$format, 'claude-haiku-4-5', 'low']));
+        $this->assertSame(['format' => $format], self::call('outputConfigFor', [$format, 'claude-sonnet-5', 'extreme']));
+    }
+
+    /**
      * A translation is read out of the reply and kept to the fields that were asked about.
      *
      * @return  void

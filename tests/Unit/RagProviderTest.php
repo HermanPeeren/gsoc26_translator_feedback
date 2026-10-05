@@ -60,6 +60,24 @@ final class RagProviderTest extends TestCase
     }
 
     /**
+     * The effort level goes into the request, except for a model that does not take one.
+     *
+     * Distilling at high effort cost about six times as much per correction as at low effort,
+     * so the level the site chose has to reach the API.
+     *
+     * @return  void
+     *
+     * @since   1.2.0
+     */
+    public function testTheEffortLevelIsSentToModelsThatTakeIt(): void
+    {
+        $format = ['type' => 'json_schema'];
+
+        $this->assertSame(['format' => $format, 'effort' => 'medium'], self::call('outputConfigFor', [$format, 'claude-sonnet-5', 'medium']));
+        $this->assertSame(['format' => $format], self::call('outputConfigFor', [$format, 'claude-haiku-4-5', 'medium']));
+    }
+
+    /**
      * A batch the model found nothing reusable in distils to no rules, not to an error.
      *
      * Most batches of corrections are typos and one-off edits, so this is the ordinary case.

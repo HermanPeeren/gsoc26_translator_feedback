@@ -61,12 +61,22 @@ final class Claude extends CMSPlugin implements SubscriberInterface
     private const MAX_TOKENS = 16000;
 
     /**
-     * Seconds to wait for the API, generous because translating a long item takes a while.
+     * Seconds to wait for the API when the plugin sets none, generous because translating a
+     * long item takes a while.
      *
      * @var    integer
-     * @since  0.4.0
+     * @since  1.2.0
      */
-    private const TIMEOUT = 120;
+    private const DEFAULT_TIMEOUT = 300;
+
+    /**
+     * The effort levels a request may ask for. Lower effort means less thinking, which is
+     * cheaper and faster; measured on language strings it did not change the translations.
+     *
+     * @var    string[]
+     * @since  1.2.0
+     */
+    private const EFFORTS = ['low', 'medium', 'high'];
 
     /**
      * The HTTP client used to call the API.
@@ -145,8 +155,9 @@ final class Claude extends CMSPlugin implements SubscriberInterface
      * Ask the Claude API to translate the strings and return them keyed as given.
      *
      * The whole collection is sent as one JSON object so the model keeps the context
-     * between an item's strings; the prompt asks for the same keys back with only the
-     * values translated.
+     * between an item's strings. Each string goes out numbered, with its key alongside as
+     * context, and the reply maps each number to the translation: a long key such as a
+     * language constant is then not repeated in the reply, which is the part paid for most.
      *
      * @param   array   $strings         The source strings keyed by field.
      * @param   string  $sourceLanguage  The source language code.
@@ -160,21 +171,106 @@ final class Claude extends CMSPlugin implements SubscriberInterface
      *
      * @since   0.4.0
      */
-    private function requestTranslation(array $strings, string $sourceLanguage, string $targetLanguage, array $rules, string $apiKey): array
-    {
+    private function requestTranslation(
+        array $strings,
+        string $sourceLanguage,
+        string $targetLanguage,
+        array $rules,
+        string $apiKey
+    ): array {
+        $model   = (string) $this->params->get('model', 'claude-sonnet-5');
+        $numbers = array_map('strval', range(1, \count($strings)));
         $payload = [
-            'model'         => (string) $this->params->get('model', 'claude-sonnet-5'),
+            'model'         => $model,
             'max_tokens'    => self::MAX_TOKENS,
             'system'        => $this->systemPrompt($sourceLanguage, $targetLanguage, $rules),
             'messages'      => [
-                ['role' => 'user', 'content' => json_encode($strings, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)],
+                [
+                    'role'    => 'user',
+                    'content' => json_encode($this->numberedStrings($strings), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+                ],
             ],
-            // Constrain the reply to a JSON object with exactly these string keys, so a long
+            // Constrain the reply to a JSON object with exactly these numbers as keys, so a long
             // HTML value can never come back as prose or malformed JSON the decoder would reject.
-            'output_config' => ['format' => $this->responseFormat(array_keys($strings))],
+            'output_config' => self::outputConfigFor(
+                $this->responseFormat($numbers),
+                $model,
+                (string) $this->params->get('effort', 'low')
+            ),
         ];
 
-        return $this->parseTranslation($this->callApi($payload, $apiKey), array_keys($strings));
+        return $this->keyedTranslation(
+            $this->parseTranslation($this->callApi($payload, $apiKey), $numbers),
+            array_keys($strings)
+        );
+    }
+
+    /**
+     * Number the strings for the request, keeping each one's key alongside as context.
+     *
+     * @param   array  $strings  The source strings keyed by field.
+     *
+     * @return  array  Each string as its key and text, keyed by its number from 1.
+     *
+     * @since   1.2.0
+     */
+    private function numberedStrings(array $strings): array
+    {
+        $numbered = [];
+        $number   = 0;
+
+        foreach ($strings as $key => $text) {
+            $numbered[(string) ++$number] = ['key' => (string) $key, 'text' => $text];
+        }
+
+        return $numbered;
+    }
+
+    /**
+     * Put the translations back under the keys the strings were sent with.
+     *
+     * @param   array  $byNumber  The translations keyed by number, for the numbers answered.
+     * @param   array  $keys      The keys the strings were sent with, in the order they were numbered.
+     *
+     * @return  array  The translations keyed by the caller's keys.
+     *
+     * @since   1.2.0
+     */
+    private function keyedTranslation(array $byNumber, array $keys): array
+    {
+        $translated = [];
+
+        foreach (array_values($keys) as $index => $key) {
+            if (isset($byNumber[$index + 1])) {
+                $translated[$key] = $byNumber[$index + 1];
+            }
+        }
+
+        return $translated;
+    }
+
+    /**
+     * The output settings for a request: the reply format, and the effort when the model takes one.
+     *
+     * Haiku does not accept an effort level, so it is left out for that model.
+     *
+     * @param   array   $format  The structured-output format.
+     * @param   string  $model   The model the request goes to.
+     * @param   string  $effort  The effort level the plugin is set to.
+     *
+     * @return  array  The output_config of the request.
+     *
+     * @since   1.2.0
+     */
+    private static function outputConfigFor(array $format, string $model, string $effort): array
+    {
+        $config = ['format' => $format];
+
+        if (\in_array($effort, self::EFFORTS, true) && !str_starts_with($model, 'claude-haiku')) {
+            $config['effort'] = $effort;
+        }
+
+        return $config;
     }
 
     /**
@@ -198,7 +294,12 @@ final class Claude extends CMSPlugin implements SubscriberInterface
         ];
 
         try {
-            $response = $this->http->post(self::ENDPOINT, json_encode($payload), $headers, self::TIMEOUT);
+            $response = $this->http->post(
+                self::ENDPOINT,
+                json_encode($payload),
+                $headers,
+                max(10, (int) $this->params->get('timeout', self::DEFAULT_TIMEOUT))
+            );
         } catch (\RuntimeException $e) {
             throw new \RuntimeException('Could not reach the Claude API: ' . $e->getMessage(), 0, $e);
         }
@@ -246,9 +347,11 @@ final class Claude extends CMSPlugin implements SubscriberInterface
     private function systemPrompt(string $sourceLanguage, string $targetLanguage, array $rules): string
     {
         $prompt = \sprintf(
-            'You are a professional translator. You receive a JSON object whose values are strings to translate from'
-            . ' %s to %s. Translate only the human-readable text in each value; keep every key unchanged, and preserve'
-            . ' HTML tags, placeholders and entities exactly. Respond with only the translated JSON object and nothing else.',
+            'You are a professional translator. You receive a JSON object of numbered strings to translate from'
+            . ' %s to %s. Each entry has a "key", which only tells you what the string is for and is never'
+            . ' translated, and a "text" to translate. Translate only the human-readable text; preserve HTML tags,'
+            . ' placeholders and entities exactly. Respond with only a JSON object that maps each number to its'
+            . ' translated text, and nothing else.',
             $sourceLanguage,
             $targetLanguage
         );
