@@ -383,7 +383,12 @@ The seed task is optional and a separate download:
 
 The task translates through the translation plugin, so that plugin must be enabled and have
 its key. A string that has been seeded is not sent again, so running the task again does not
-pay for it twice. A text that occurs in several language files - the site, administrator and
+pay for it twice. Seeding is incremental: when a new version of the language pack adds files or
+strings, the next run sends only those. A string whose English text or whose translation in the
+pack has changed since it was seeded is sent again too, so what the language team changed is
+learned as well; the seed task notices this by a fingerprint it keeps of both texts. Strings
+seeded before version 1.2.0 get that fingerprint the first time a run sees them, without being
+sent again. A text that occurs in several language files - the site, administrator and
 API files repeat many strings - is translated once for all of them, and the feedback says how
 many strings it stands for. A string the machine already translates the way the pack does
 writes no feedback, because there is nothing to learn from it. Like the distiller, the seed

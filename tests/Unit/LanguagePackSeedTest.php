@@ -257,6 +257,52 @@ final class LanguagePackSeedTest extends TestCase
     }
 
     /**
+     * A string is seeded once, and again only when a new pack version changes its source text or
+     * its translation.
+     *
+     * Without the fingerprint a changed string would count as done for good, and what the
+     * language team changed in a new pack would never be learned from.
+     *
+     * @return  void
+     *
+     * @since   1.2.0
+     */
+    public function testOnlyNewAndChangedStringsArePending(): void
+    {
+        $pairs = [
+            'site/a.ini#NEW'       => self::pair('site/a.ini', 'NEW', 'New'),
+            'site/a.ini#SAME'      => self::pair('site/a.ini', 'SAME', 'Same'),
+            'site/a.ini#CHANGED'   => self::pair('site/a.ini', 'CHANGED', 'Changed'),
+            'site/a.ini#FAILED'    => self::pair('site/a.ini', 'FAILED', 'Failed'),
+            'site/a.ini#OLD'       => self::pair('site/a.ini', 'OLD', 'Old'),
+            'site/a.ini#OLD_RETRY' => self::pair('site/a.ini', 'OLD_RETRY', 'Old retry'),
+        ];
+
+        $states = [
+            'site/a.ini#SAME'      => ['status' => 'seeded', 'attempts' => 1, 'fingerprint' => self::fingerprint($pairs['site/a.ini#SAME'])],
+            'site/a.ini#CHANGED'   => ['status' => 'seeded', 'attempts' => 1, 'fingerprint' => sha1('what it said before')],
+            'site/a.ini#FAILED'    => ['status' => 'failed', 'attempts' => 3, 'fingerprint' => sha1('what it said before')],
+            'site/a.ini#OLD'       => ['status' => 'seeded', 'attempts' => 1, 'fingerprint' => ''],
+            'site/a.ini#OLD_RETRY' => ['status' => 'retry', 'attempts' => 1, 'fingerprint' => ''],
+        ];
+
+        $method = new ReflectionMethod(Seeder::class, 'classify');
+        $method->setAccessible(true);
+        $plan = $method->invoke(null, $pairs, $states);
+
+        $this->assertSame(
+            ['site/a.ini#OLD_RETRY', 'site/a.ini#NEW', 'site/a.ini#CHANGED', 'site/a.ini#FAILED'],
+            array_keys($plan['pending']),
+            'Retries first, then new and changed strings; unchanged and old seeded strings are done'
+        );
+        $this->assertSame(['site/a.ini#CHANGED', 'site/a.ini#FAILED'], array_keys($plan['reopen']));
+        $this->assertSame(0, $plan['pending']['site/a.ini#FAILED']['attempts'], 'A changed string starts with fresh attempts');
+        $this->assertTrue($plan['pending']['site/a.ini#CHANGED']['recorded'], 'A changed string already has a record');
+        $this->assertFalse($plan['pending']['site/a.ini#NEW']['recorded']);
+        $this->assertSame(['site/a.ini#OLD', 'site/a.ini#OLD_RETRY'], array_keys($plan['backfill']), 'Old records get a fingerprint');
+    }
+
+    /**
      * Nothing left to seed is no request at all.
      *
      * @return  void
@@ -303,6 +349,23 @@ final class LanguagePackSeedTest extends TestCase
         $method->setAccessible(true);
 
         return $method->invoke($seeder, self::units($pairs), Seeder::DEFAULT_REQUEST_SIZE);
+    }
+
+    /**
+     * The fingerprint the seeder records for a pair.
+     *
+     * @param   array  $pair  The pair.
+     *
+     * @return  string  The fingerprint.
+     *
+     * @since   1.2.0
+     */
+    private static function fingerprint(array $pair): string
+    {
+        $method = new ReflectionMethod(Seeder::class, 'fingerprint');
+        $method->setAccessible(true);
+
+        return $method->invoke(null, $pair);
     }
 
     /**

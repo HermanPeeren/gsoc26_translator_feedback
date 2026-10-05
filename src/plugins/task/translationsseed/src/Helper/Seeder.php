@@ -335,23 +335,138 @@ class Seeder
             return [];
         }
 
-        $states  = $this->seedStates($targetLanguage, array_keys($pairs));
-        $retried = [];
-        $untried = [];
+        $plan = self::classify($pairs, $this->seedStates($targetLanguage, array_keys($pairs)));
+
+        $this->storeFingerprints($targetLanguage, $plan['backfill'], false);
+        $this->storeFingerprints($targetLanguage, $plan['reopen'], true);
+
+        return $plan['pending'];
+    }
+
+    /**
+     * Sort the pack's pairs by what a run has to do with them.
+     *
+     * A string that was never sent is pending. One that is seeded, or set aside as failed, is
+     * done - unless its fingerprint shows that its source text or the pack's translation has
+     * changed since, as a new version of the pack may do: then it is opened again with fresh
+     * attempts, and seeded like a new string. A string recorded before fingerprints were kept
+     * gets one now, without a request, so a change is noticed from then on.
+     *
+     * @param   array  $pairs   The pack's pairs, keyed by string id.
+     * @param   array  $states  Status, attempts and fingerprint keyed by string id, for the strings recorded.
+     *
+     * @return  array  pending: the pairs to send, keyed by string id, those that failed before first;
+     *                 reopen: the new fingerprint of each changed string to open again;
+     *                 backfill: the fingerprint of each recorded string that had none.
+     *
+     * @since   1.2.0
+     */
+    private static function classify(array $pairs, array $states): array
+    {
+        $retried  = [];
+        $untried  = [];
+        $reopen   = [];
+        $backfill = [];
 
         foreach ($pairs as $stringId => $pair) {
-            $state = $states[$stringId] ?? null;
+            $fingerprint         = self::fingerprint($pair);
+            $state               = $states[$stringId] ?? null;
+            $pair['fingerprint'] = $fingerprint;
 
             if ($state === null) {
                 $pair['attempts']   = 0;
+                $pair['recorded']   = false;
                 $untried[$stringId] = $pair;
-            } elseif ($state['status'] === self::STATUS_RETRY && $state['attempts'] < RunResult::MAX_ATTEMPTS) {
+
+                continue;
+            }
+
+            $pair['recorded'] = true;
+
+            if ($state['fingerprint'] === '') {
+                $backfill[$stringId] = $fingerprint;
+            } elseif ($state['fingerprint'] !== $fingerprint) {
+                $reopen[$stringId]  = $fingerprint;
+                $pair['attempts']   = 0;
+                $untried[$stringId] = $pair;
+
+                continue;
+            }
+
+            if ($state['status'] === self::STATUS_RETRY && $state['attempts'] < RunResult::MAX_ATTEMPTS) {
                 $pair['attempts']   = $state['attempts'];
                 $retried[$stringId] = $pair;
             }
         }
 
-        return $retried + $untried;
+        return ['pending' => $retried + $untried, 'reopen' => $reopen, 'backfill' => $backfill];
+    }
+
+    /**
+     * The fingerprint of a pair: what its source text and the pack's translation say.
+     *
+     * @param   array  $pair  The pair.
+     *
+     * @return  string  A 40-character hash, the same for as long as neither text changes.
+     *
+     * @since   1.2.0
+     */
+    private static function fingerprint(array $pair): string
+    {
+        return sha1(trim((string) $pair['source']) . "\x1F" . trim((string) $pair['approved']));
+    }
+
+    /**
+     * Store fingerprints on recorded strings, and open changed strings again when asked.
+     *
+     * @param   string   $targetLanguage  The target language code.
+     * @param   array    $fingerprints    The fingerprint to store, keyed by string id.
+     * @param   boolean  $reopen          Whether the strings are opened again with fresh attempts.
+     *
+     * @return  void
+     *
+     * @since   1.2.0
+     */
+    private function storeFingerprints(string $targetLanguage, array $fingerprints, bool $reopen): void
+    {
+        if ($fingerprints === []) {
+            return;
+        }
+
+        $retry     = self::STATUS_RETRY;
+        $lastError = '';
+
+        $this->db->transactionStart();
+
+        try {
+            foreach ($fingerprints as $stringId => $fingerprint) {
+                $stringId = (string) $stringId;
+                $query    = $this->db->getQuery(true)
+                    ->update($this->db->quoteName('#__translations_seeded_strings'))
+                    ->set($this->db->quoteName('fingerprint') . ' = :fingerprint')
+                    ->where($this->db->quoteName('target_language') . ' = :targetLanguage')
+                    ->where($this->db->quoteName('string_id') . ' = :stringId')
+                    ->bind(':fingerprint', $fingerprint, ParameterType::STRING)
+                    ->bind(':targetLanguage', $targetLanguage, ParameterType::STRING)
+                    ->bind(':stringId', $stringId, ParameterType::STRING);
+
+                if ($reopen) {
+                    $query->set($this->db->quoteName('status') . ' = :retry')
+                        ->set($this->db->quoteName('attempts') . ' = 0')
+                        ->set($this->db->quoteName('last_error') . ' = :lastError')
+                        ->bind(':retry', $retry, ParameterType::STRING)
+                        ->bind(':lastError', $lastError, ParameterType::STRING);
+                }
+
+                $this->db->setQuery($query)->execute();
+            }
+
+            $this->db->transactionCommit();
+        } catch (\Throwable $e) {
+            $this->db->transactionRollback();
+
+            throw $e;
+        }
     }
 
     /**
@@ -360,14 +475,14 @@ class Seeder
      * @param   string    $targetLanguage  The target language code.
      * @param   string[]  $stringIds       The string ids to look for.
      *
-     * @return  array  Status and attempts keyed by string id, for the strings recorded.
+     * @return  array  Status, attempts and fingerprint keyed by string id, for the strings recorded.
      *
      * @since   1.1.0
      */
     private function seedStates(string $targetLanguage, array $stringIds): array
     {
         $query = $this->db->getQuery(true)
-            ->select($this->db->quoteName(['string_id', 'status', 'attempts']))
+            ->select($this->db->quoteName(['string_id', 'status', 'attempts', 'fingerprint']))
             ->from($this->db->quoteName('#__translations_seeded_strings'))
             ->where($this->db->quoteName('target_language') . ' = :targetLanguage')
             ->whereIn($this->db->quoteName('string_id'), $stringIds, ParameterType::STRING)
@@ -378,8 +493,9 @@ class Seeder
 
         foreach ($this->db->loadAssocList() ?: [] as $row) {
             $states[(string) $row['string_id']] = [
-                'status'   => (string) $row['status'],
-                'attempts' => (int) $row['attempts'],
+                'status'      => (string) $row['status'],
+                'attempts'    => (int) $row['attempts'],
+                'fingerprint' => (string) $row['fingerprint'],
             ];
         }
 
@@ -486,41 +602,54 @@ class Seeder
      */
     private function countAttempt(array $chunk, string $targetLanguage): void
     {
-        $untried = [];
-        $retried = [];
+        // A string with a record - one that failed before, or one opened again because it changed -
+        // is updated; a string sent for the first time gets its record, with its fingerprint.
+        $recorded = [];
+        $new      = [];
 
         foreach ($chunk as $unit) {
             foreach ($unit['pairs'] as $pair) {
-                if (($pair['attempts'] ?? 0) > 0) {
-                    $retried[] = $pair['file'] . '#' . $pair['key'];
+                $stringId = $pair['file'] . '#' . $pair['key'];
+
+                if ($pair['recorded'] ?? (($pair['attempts'] ?? 0) > 0)) {
+                    $recorded[] = $stringId;
                 } else {
-                    $untried[] = $pair['file'] . '#' . $pair['key'];
+                    $new[$stringId] = (string) ($pair['fingerprint'] ?? '');
                 }
             }
         }
 
-        if ($retried !== []) {
+        if ($recorded !== []) {
+            $retry = self::STATUS_RETRY;
             $query = $this->db->getQuery(true)
                 ->update($this->db->quoteName('#__translations_seeded_strings'))
                 ->set($this->db->quoteName('attempts') . ' = ' . $this->db->quoteName('attempts') . ' + 1')
+                ->set($this->db->quoteName('status') . ' = :retry')
                 ->where($this->db->quoteName('target_language') . ' = :targetLanguage')
-                ->whereIn($this->db->quoteName('string_id'), $retried, ParameterType::STRING)
+                ->whereIn($this->db->quoteName('string_id'), $recorded, ParameterType::STRING)
+                ->bind(':retry', $retry, ParameterType::STRING)
                 ->bind(':targetLanguage', $targetLanguage, ParameterType::STRING);
             $this->db->setQuery($query)->execute();
         }
 
-        if ($untried !== []) {
+        if ($new !== []) {
             $query = $this->db->getQuery(true)
                 ->insert($this->db->quoteName('#__translations_seeded_strings'))
-                ->columns($this->db->quoteName(['target_language', 'string_id', 'status', 'attempts']));
+                ->columns($this->db->quoteName(['target_language', 'string_id', 'status', 'attempts', 'fingerprint']));
 
-            foreach ($untried as $stringId) {
+            foreach ($new as $stringId => $fingerprint) {
                 $query->values(
                     implode(
                         ',',
                         $query->bindArray(
-                            [$targetLanguage, $stringId, self::STATUS_RETRY, 1],
-                            [ParameterType::STRING, ParameterType::STRING, ParameterType::STRING, ParameterType::INTEGER]
+                            [$targetLanguage, (string) $stringId, self::STATUS_RETRY, 1, $fingerprint],
+                            [
+                                ParameterType::STRING,
+                                ParameterType::STRING,
+                                ParameterType::STRING,
+                                ParameterType::INTEGER,
+                                ParameterType::STRING,
+                            ]
                         )
                     )
                 );
