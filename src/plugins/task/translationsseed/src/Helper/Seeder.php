@@ -17,6 +17,7 @@ namespace Joomla\Plugin\Task\TranslationsSeed\Helper;
 use Joomla\CMS\Plugin\PluginHelper;
 use Joomla\Component\Translations\Administrator\Helper\RunResult;
 use Joomla\Component\Translations\Administrator\Helper\StringTranslator;
+use Joomla\Component\Translations\Administrator\Helper\TimeBudget;
 use Joomla\Database\DatabaseInterface;
 use Joomla\Database\ParameterType;
 use Joomla\Event\DispatcherInterface;
@@ -40,16 +41,16 @@ use Joomla\Event\DispatcherInterface;
 class Seeder
 {
     /**
-     * The most strings sent in one request.
+     * The most distinct texts sent in one request when the task sets none.
      *
      * A provider is asked for every key it is given, so an oversized request is lost as a whole
      * rather than in part. This keeps a request short enough that the reply has room to grow for
      * a language whose wording runs longer than the source.
      *
      * @var    integer
-     * @since  1.0.0
+     * @since  1.2.0
      */
-    private const STRINGS_PER_REQUEST = 25;
+    public const DEFAULT_REQUEST_SIZE = 25;
 
     /**
      * Failures in a row that end a run.
@@ -128,16 +129,19 @@ class Seeder
     }
 
     /**
-     * Seed feedback from one batch of a language pack's translated strings.
+     * Seed feedback from a language pack's translated strings, for as long as the run's time
+     * budget allows.
      *
      * A string already seeded for the language is skipped, so a run resumes where the last one
-     * stopped rather than paying for the same translations again. Each request is saved as soon
-     * as it is answered, and a string that failed before is sent in a smaller request.
+     * stopped rather than paying for the same translations again. A text that occurs in several
+     * places in the pack is translated once. Each request is saved as soon as it is answered,
+     * and a string that failed before is sent in a smaller request.
      *
-     * @param   string    $sourceLanguage  The language tag the strings are written in.
-     * @param   string    $targetLanguage  The language tag of the pack to learn from.
-     * @param   integer   $batchSize       The most strings to seed in one run.
-     * @param   string[]  $fileNames       The language file names to read, all of them when empty.
+     * @param   string      $sourceLanguage  The language tag the strings are written in.
+     * @param   string      $targetLanguage  The language tag of the pack to learn from.
+     * @param   integer     $requestSize     The most distinct texts sent in one request.
+     * @param   TimeBudget  $budget          How long the run may keep sending requests.
+     * @param   string[]    $fileNames       The language file names to read, all of them when empty.
      *
      * @return  RunResult  What the run did, and whether it should run again.
      *
@@ -148,7 +152,8 @@ class Seeder
     public function seed(
         string $sourceLanguage,
         string $targetLanguage,
-        int $batchSize,
+        int $requestSize,
+        TimeBudget $budget,
         array $fileNames = []
     ): RunResult {
         if ($targetLanguage === $sourceLanguage) {
@@ -166,13 +171,18 @@ class Seeder
         $pending  = $this->pendingPairs($sourceLanguage, $targetLanguage, $fileNames);
         $failures = 0;
 
-        foreach ($this->requestChunks(\array_slice($pending, 0, $batchSize, true)) as $chunk) {
+        foreach ($this->requestChunks(self::units($pending), $requestSize) as $chunk) {
+            if (!$budget->allowsAnother()) {
+                break;
+            }
+
             $this->countAttempt($chunk, $targetLanguage);
+            $budget->startRequest();
 
             try {
                 $translated = StringTranslator::translate(
                     $this->dispatcher,
-                    array_map(static fn(array $pair): string => $pair['source'], $chunk),
+                    array_map(static fn(array $unit): string => $unit['source'], $chunk),
                     $sourceLanguage,
                     $targetLanguage,
                     []
@@ -180,6 +190,7 @@ class Seeder
 
                 $failures = 0;
             } catch (\Throwable $e) {
+                $budget->endRequest();
                 $this->recordFailure(self::stringIds($chunk), $targetLanguage, $e->getMessage(), $result);
 
                 if (++$failures === self::MAX_CONSECUTIVE_FAILURES) {
@@ -196,6 +207,7 @@ class Seeder
                 continue;
             }
 
+            $budget->endRequest();
             $this->recordChunk($chunk, $translated, $targetLanguage, $result);
         }
 
@@ -282,28 +294,64 @@ class Seeder
     }
 
     /**
-     * Split the pairs into requests, each keyed by language key.
+     * Group the pairs by their source text, so a text that occurs in several places is
+     * translated once.
+     *
+     * A pack translates the same text the same way wherever it occurs - the site, administrator
+     * and API files repeat many strings - so sending each occurrence would pay for one answer
+     * several times, and give the distiller the same correction several times over. A group
+     * goes out under the key of its first string, for context, and has the most attempts any
+     * of its strings has had.
+     *
+     * @param   array  $pairs  The pairs, keyed by string id.
+     *
+     * @return  array  One unit per distinct source text: key, source, attempts and its pairs.
+     *
+     * @since   1.2.0
+     */
+    private static function units(array $pairs): array
+    {
+        $units = [];
+
+        foreach ($pairs as $pair) {
+            $source   = $pair['source'];
+            $attempts = (int) ($pair['attempts'] ?? 0);
+
+            if (!isset($units[$source])) {
+                $units[$source] = ['key' => $pair['key'], 'source' => $source, 'attempts' => $attempts, 'pairs' => []];
+            }
+
+            $units[$source]['attempts'] = max($units[$source]['attempts'], $attempts);
+            $units[$source]['pairs'][]  = $pair;
+        }
+
+        return array_values($units);
+    }
+
+    /**
+     * Split the units into requests, each keyed by language key.
      *
      * The key tells a provider what a string is for, which a bare string does not, but a handful
      * of keys are used for different text in different files. A chunk therefore ends early rather
      * than let one of those overwrite the other.
      *
-     * A string that failed before goes in a smaller request: half the size on its second attempt,
-     * on its own on its last. A string that keeps failing is so narrowed down without paying for a
-     * request per string as soon as one request fails. The strings that failed most come first.
+     * A text that failed before goes in a smaller request: half the size on its second attempt,
+     * on its own on its last. A text that keeps failing is so narrowed down without paying for a
+     * request per text as soon as one request fails. The texts that failed most come first.
      *
-     * @param   array  $pairs  The pairs to send, keyed by string id.
+     * @param   array    $units        The units to send.
+     * @param   integer  $requestSize  The most units in a first request.
      *
-     * @return  array  The chunks, each an array of pairs keyed by language key.
+     * @return  array  The chunks, each an array of units keyed by language key.
      *
      * @since   1.0.0
      */
-    private function requestChunks(array $pairs): array
+    private function requestChunks(array $units, int $requestSize): array
     {
         $byAttempts = [];
 
-        foreach ($pairs as $pair) {
-            $byAttempts[(int) ($pair['attempts'] ?? 0)][] = $pair;
+        foreach ($units as $unit) {
+            $byAttempts[(int) $unit['attempts']][] = $unit;
         }
 
         krsort($byAttempts);
@@ -311,19 +359,19 @@ class Seeder
         $chunks = [];
 
         foreach ($byAttempts as $attempts => $group) {
-            $limit = RunResult::requestLimit(self::STRINGS_PER_REQUEST, $attempts);
+            $limit = RunResult::requestLimit($requestSize, $attempts);
             $chunk = [];
 
-            foreach ($group as $pair) {
-                if (isset($chunk[$pair['key']]) || \count($chunk) >= $limit) {
+            foreach ($group as $unit) {
+                if (isset($chunk[$unit['key']]) || \count($chunk) >= $limit) {
                     $chunks[] = $chunk;
                     $chunk    = [];
                 }
 
-                $chunk[$pair['key']] = $pair;
+                $chunk[$unit['key']] = $unit;
             }
 
-            // A group holds at least one pair, so its last chunk is never empty.
+            // A group holds at least one unit, so its last chunk is never empty.
             $chunks[] = $chunk;
         }
 
@@ -336,7 +384,7 @@ class Seeder
      * Counting first means a run that is killed while it waits for the provider still uses up
      * one of the strings' attempts, so even a request that never returns is not repeated forever.
      *
-     * @param   array   $chunk           The pairs about to be sent, keyed by language key.
+     * @param   array   $chunk           The units about to be sent, keyed by language key.
      * @param   string  $targetLanguage  The target language code.
      *
      * @return  void
@@ -348,11 +396,13 @@ class Seeder
         $untried = [];
         $retried = [];
 
-        foreach ($chunk as $pair) {
-            if (($pair['attempts'] ?? 0) > 0) {
-                $retried[] = $pair['file'] . '#' . $pair['key'];
-            } else {
-                $untried[] = $pair['file'] . '#' . $pair['key'];
+        foreach ($chunk as $unit) {
+            foreach ($unit['pairs'] as $pair) {
+                if (($pair['attempts'] ?? 0) > 0) {
+                    $retried[] = $pair['file'] . '#' . $pair['key'];
+                } else {
+                    $untried[] = $pair['file'] . '#' . $pair['key'];
+                }
             }
         }
 
@@ -390,15 +440,19 @@ class Seeder
     /**
      * Record a translated chunk: the feedback it produced, and that its strings are seeded.
      *
-     * A string the provider translated exactly as the pack does carries no correction to learn
-     * from, so it writes no feedback. It is still marked seeded, because the call it took has been
-     * paid for either way. A string the provider passed over counts as a failed attempt, so a
-     * later run asks for it again, up to its last attempt.
+     * A text the provider translated exactly as the pack does carries no correction to learn
+     * from, so it writes no feedback. Its strings are still marked seeded, because the call it
+     * took has been paid for either way. A text the provider passed over counts as a failed
+     * attempt for its strings, so a later run asks for it again, up to its last attempt.
+     *
+     * A text writes one feedback row per distinct way the pack translates it, with the number of
+     * strings that row stands for, so the distiller weighs a correction by how often it occurs
+     * without reading it several times.
      *
      * The feedback and the seeded marks are written in one transaction, so a chunk is recorded
      * whole or not at all.
      *
-     * @param   array      $chunk           The pairs sent, keyed by language key.
+     * @param   array      $chunk           The units sent, keyed by language key.
      * @param   array      $translated      The provider's translations, keyed as sent.
      * @param   string     $targetLanguage  The target language code.
      * @param   RunResult  $result          The run's result, updated in place.
@@ -415,33 +469,36 @@ class Seeder
         $this->db->transactionStart();
 
         try {
-            foreach ($chunk as $key => $pair) {
-                $stringId     = $pair['file'] . '#' . $pair['key'];
+            foreach ($chunk as $key => $unit) {
+                $stringIds    = self::stringIds([$unit]);
                 $machineDraft = trim((string) ($translated[$key] ?? ''));
 
                 if ($machineDraft === '') {
-                    $missing[] = $stringId;
+                    $missing = array_merge($missing, $stringIds);
 
                     continue;
                 }
 
-                $seeded[] = $stringId;
+                $seeded = array_merge($seeded, $stringIds);
 
-                if ($machineDraft === trim($pair['approved'])) {
-                    continue;
+                foreach (self::approvedTranslations($unit) as $approved => $occurrences) {
+                    if ($machineDraft === $approved) {
+                        continue;
+                    }
+
+                    $row = (object) [
+                        'queue_id'         => 0,
+                        'source_text'      => $unit['source'],
+                        'machine_draft'    => $machineDraft,
+                        'human_correction' => $approved,
+                        'target_language'  => $targetLanguage,
+                        'source_origin'    => self::SOURCE_ORIGIN,
+                        'translator_id'    => 0,
+                        'occurrences'      => $occurrences,
+                    ];
+
+                    $this->db->insertObject('#__translations_feedback', $row);
                 }
-
-                $row = (object) [
-                    'queue_id'         => 0,
-                    'source_text'      => $pair['source'],
-                    'machine_draft'    => $machineDraft,
-                    'human_correction' => $pair['approved'],
-                    'target_language'  => $targetLanguage,
-                    'source_origin'    => self::SOURCE_ORIGIN,
-                    'translator_id'    => 0,
-                ];
-
-                $this->db->insertObject('#__translations_feedback', $row);
             }
 
             $this->markSeeded($seeded, $targetLanguage);
@@ -540,9 +597,9 @@ class Seeder
     }
 
     /**
-     * The string ids of the pairs in a chunk.
+     * The string ids of all the pairs in a chunk's units.
      *
-     * @param   array  $chunk  The pairs, keyed by language key.
+     * @param   array  $chunk  The units.
      *
      * @return  string[]  The string ids.
      *
@@ -550,8 +607,35 @@ class Seeder
      */
     private static function stringIds(array $chunk): array
     {
-        return array_values(
-            array_map(static fn(array $pair): string => $pair['file'] . '#' . $pair['key'], $chunk)
-        );
+        $stringIds = [];
+
+        foreach ($chunk as $unit) {
+            foreach ($unit['pairs'] as $pair) {
+                $stringIds[] = $pair['file'] . '#' . $pair['key'];
+            }
+        }
+
+        return $stringIds;
+    }
+
+    /**
+     * The distinct ways the pack translates a unit's text, each with how many strings use it.
+     *
+     * @param   array  $unit  The unit.
+     *
+     * @return  array  The number of strings keyed by the approved translation.
+     *
+     * @since   1.2.0
+     */
+    private static function approvedTranslations(array $unit): array
+    {
+        $approved = [];
+
+        foreach ($unit['pairs'] as $pair) {
+            $translation            = trim($pair['approved']);
+            $approved[$translation] = ($approved[$translation] ?? 0) + 1;
+        }
+
+        return $approved;
     }
 }

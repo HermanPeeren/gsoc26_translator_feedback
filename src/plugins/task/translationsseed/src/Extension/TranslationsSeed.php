@@ -17,6 +17,7 @@ namespace Joomla\Plugin\Task\TranslationsSeed\Extension;
 use Joomla\CMS\Component\ComponentHelper;
 use Joomla\CMS\Plugin\CMSPlugin;
 use Joomla\Component\Translations\Administrator\Helper\RunResult;
+use Joomla\Component\Translations\Administrator\Helper\TimeBudget;
 use Joomla\Component\Scheduler\Administrator\Event\ExecuteTaskEvent;
 use Joomla\Component\Scheduler\Administrator\Task\Status;
 use Joomla\Component\Scheduler\Administrator\Traits\TaskPluginTrait;
@@ -88,7 +89,8 @@ final class TranslationsSeed extends CMSPlugin implements SubscriberInterface
     protected function seed(ExecuteTaskEvent $event): int
     {
         $params         = $event->getArgument('params');
-        $batchSize      = max(1, (int) ($params->batch ?? 50));
+        $requestSize    = max(1, (int) ($params->request_size ?? Seeder::DEFAULT_REQUEST_SIZE));
+        $budget         = new TimeBudget((int) ($params->time_budget ?? 0));
         $targetLanguage = (string) ($params->target_language ?? '');
         $fileNames      = array_filter(array_map('trim', explode(',', (string) ($params->files ?? ''))));
         $language       = $this->getApplication()->getLanguage();
@@ -118,7 +120,7 @@ final class TranslationsSeed extends CMSPlugin implements SubscriberInterface
         $seeder = new Seeder($this->getDatabase(), $this->getApplication()->getDispatcher());
 
         try {
-            $result = $seeder->seed($sourceLanguage, $targetLanguage, $batchSize, $fileNames);
+            $result = $seeder->seed($sourceLanguage, $targetLanguage, $requestSize, $budget, $fileNames);
         } catch (\Throwable $e) {
             return $this->knockout($e->getMessage());
         }

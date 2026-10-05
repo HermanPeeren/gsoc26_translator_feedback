@@ -208,6 +208,55 @@ final class LanguagePackSeedTest extends TestCase
     }
 
     /**
+     * A text that occurs in several language files is translated once, for all of them.
+     *
+     * The site, administrator and API files repeat many strings, and a pack translates every
+     * repeat the same way; in the nl-NL pack 38% of the strings are such repeats.
+     *
+     * @return  void
+     *
+     * @since   1.2.0
+     */
+    public function testARepeatedTextIsTranslatedOnce(): void
+    {
+        $units = self::units(
+            [
+                'site/joomla.ini#JSAVE'          => self::pair('site/joomla.ini', 'JSAVE', 'Save'),
+                'administrator/joomla.ini#JSAVE' => self::pair('administrator/joomla.ini', 'JSAVE', 'Save'),
+                'api/joomla.ini#JAPPLY'          => self::pair('api/joomla.ini', 'JAPPLY', 'Save'),
+                'site/joomla.ini#JCANCEL'        => self::pair('site/joomla.ini', 'JCANCEL', 'Cancel'),
+            ]
+        );
+
+        $this->assertSame(['Save', 'Cancel'], array_column($units, 'source'));
+        $this->assertCount(3, $units[0]['pairs'], 'The one translation stands for all three strings');
+        $this->assertSame('JSAVE', $units[0]['key'], 'The first string gives the key that goes with the text');
+    }
+
+    /**
+     * A repeated text writes one feedback row per distinct pack translation, counting its strings.
+     *
+     * @return  void
+     *
+     * @since   1.2.0
+     */
+    public function testEachDistinctPackTranslationIsCountedOnce(): void
+    {
+        $unit = [
+            'pairs' => [
+                ['approved' => 'Opslaan'],
+                ['approved' => 'Opslaan '],
+                ['approved' => 'Bewaren'],
+            ],
+        ];
+
+        $method = new ReflectionMethod(Seeder::class, 'approvedTranslations');
+        $method->setAccessible(true);
+
+        $this->assertSame(['Opslaan' => 2, 'Bewaren' => 1], $method->invoke(null, $unit));
+    }
+
+    /**
      * Nothing left to seed is no request at all.
      *
      * @return  void
@@ -253,6 +302,23 @@ final class LanguagePackSeedTest extends TestCase
         $method = new ReflectionMethod(Seeder::class, 'requestChunks');
         $method->setAccessible(true);
 
-        return $method->invoke($seeder, $pairs);
+        return $method->invoke($seeder, self::units($pairs), Seeder::DEFAULT_REQUEST_SIZE);
+    }
+
+    /**
+     * Group pending pairs into the units a run translates: one per distinct source text.
+     *
+     * @param   array  $pairs  The pending pairs, keyed by string id.
+     *
+     * @return  array  The units.
+     *
+     * @since   1.2.0
+     */
+    private static function units(array $pairs): array
+    {
+        $method = new ReflectionMethod(Seeder::class, 'units');
+        $method->setAccessible(true);
+
+        return $method->invoke(null, $pairs);
     }
 }
