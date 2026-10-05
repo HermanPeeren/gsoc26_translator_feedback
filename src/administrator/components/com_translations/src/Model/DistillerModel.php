@@ -206,6 +206,50 @@ class DistillerModel extends BaseDatabaseModel
     }
 
     /**
+     * Give the feedback rows that were set aside as failed a new set of attempts.
+     *
+     * For use once the cause of the failures is fixed, such as an invalid model or an empty
+     * credit balance.
+     *
+     * @return  integer  The number of rows made pending again.
+     *
+     * @since   1.2.0
+     */
+    public function resetFailed(): int
+    {
+        $failed    = 'failed';
+        $pending   = 'pending';
+        $lastError = '';
+        $db        = $this->getDatabase();
+        $query     = $db->getQuery(true)
+            ->update($db->quoteName('#__translations_feedback'))
+            ->set($db->quoteName('status') . ' = :pending')
+            ->set($db->quoteName('attempts') . ' = 0')
+            ->set($db->quoteName('last_error') . ' = :lastError')
+            ->where($db->quoteName('status') . ' = :failed')
+            ->bind(':pending', $pending, ParameterType::STRING)
+            ->bind(':lastError', $lastError, ParameterType::STRING)
+            ->bind(':failed', $failed, ParameterType::STRING);
+        $db->setQuery($query)->execute();
+
+        return $db->getAffectedRows();
+    }
+
+    /**
+     * Merge the existing rules that say the same thing, keeping the oldest of each set.
+     *
+     * @param   string  $language  The target language to merge, all languages when empty.
+     *
+     * @return  integer  The number of rules merged away (trashed).
+     *
+     * @since   1.2.0
+     */
+    public function mergeDuplicateRules(string $language = ''): int
+    {
+        return RuleMerger::mergeDuplicates($this->getDatabase(), $language);
+    }
+
+    /**
      * Send one request's worth of corrections and save what comes back.
      *
      * The attempt is counted before the provider is asked, so a run that is killed while it

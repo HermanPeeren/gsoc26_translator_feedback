@@ -51,6 +51,10 @@ final class TranslationsSeed extends CMSPlugin implements SubscriberInterface
             'form'            => 'seed',
             'method'          => 'seed',
         ],
+        'translationsseed.resetfailed' => [
+            'langConstPrefix' => 'PLG_TASK_TRANSLATIONSSEED_RESETFAILED',
+            'method'          => 'resetFailed',
+        ],
     ];
 
     /**
@@ -165,6 +169,28 @@ final class TranslationsSeed extends CMSPlugin implements SubscriberInterface
             default:
                 return Status::OK;
         }
+    }
+
+    /**
+     * Give the strings that were set aside as failed a new set of attempts.
+     *
+     * @param   ExecuteTaskEvent  $event  The onExecuteTask event.
+     *
+     * @return  integer  The task exit status.
+     *
+     * @since   1.2.0
+     */
+    protected function resetFailed(ExecuteTaskEvent $event): int
+    {
+        try {
+            $reset = (new Seeder($this->getDatabase(), $this->getApplication()->getDispatcher()))->resetFailed();
+        } catch (\Throwable $e) {
+            return $this->knockout($e->getMessage());
+        }
+
+        $this->logTask(\sprintf($this->getApplication()->getLanguage()->_('PLG_TASK_TRANSLATIONSSEED_RESETFAILED_LOG'), $reset));
+
+        return Status::OK;
     }
 
     /**

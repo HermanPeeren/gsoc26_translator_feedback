@@ -217,6 +217,28 @@ class Seeder
     }
 
     /**
+     * Give the strings that were set aside as failed a new set of attempts.
+     *
+     * A failed string's record is removed, so the next run sees it as untried. For use once the
+     * cause of the failures is fixed, such as an invalid model or an empty credit balance.
+     *
+     * @return  integer  The number of strings made pending again.
+     *
+     * @since   1.2.0
+     */
+    public function resetFailed(): int
+    {
+        $failed = self::STATUS_FAILED;
+        $query  = $this->db->getQuery(true)
+            ->delete($this->db->quoteName('#__translations_seeded_strings'))
+            ->where($this->db->quoteName('status') . ' = :failed')
+            ->bind(':failed', $failed, ParameterType::STRING);
+        $this->db->setQuery($query)->execute();
+
+        return $this->db->getAffectedRows();
+    }
+
+    /**
      * Collect the pack's translated strings that are still to be seeded.
      *
      * Strings that failed before come first, so they are settled before new ones are taken on.
