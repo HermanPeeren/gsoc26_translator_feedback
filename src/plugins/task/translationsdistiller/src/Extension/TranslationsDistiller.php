@@ -21,15 +21,16 @@ use Joomla\Component\Scheduler\Administrator\Event\ExecuteTaskEvent;
 use Joomla\Component\Scheduler\Administrator\Task\Status;
 use Joomla\Component\Scheduler\Administrator\Traits\TaskPluginTrait;
 use Joomla\Component\Translations\Administrator\Helper\RunResult;
+use Joomla\Component\Translations\Administrator\Helper\TimeBudget;
 use Joomla\Component\Translations\Administrator\Model\DistillerModel;
 use Joomla\Event\SubscriberInterface;
 
 /**
  * Task plugin that runs the rules distiller on a schedule.
  *
- * A thin trigger: it boots the Translations component and runs the distiller over one
- * batch of pending feedback per execution, resuming until the backlog is drained. The
- * distillation itself lives in the component.
+ * A thin trigger: it boots the Translations component and runs the distiller over pending
+ * feedback for as long as the run's time budget allows, resuming until the backlog is drained.
+ * The distillation itself lives in the component.
  *
  * @since  0.4.0
  */
@@ -76,7 +77,7 @@ final class TranslationsDistiller extends CMSPlugin implements SubscriberInterfa
     }
 
     /**
-     * Run the rules distiller over one batch of pending feedback.
+     * Run the rules distiller over pending feedback until the run's time budget is used up.
      *
      * @param   ExecuteTaskEvent  $event  The onExecuteTask event.
      *
@@ -86,9 +87,10 @@ final class TranslationsDistiller extends CMSPlugin implements SubscriberInterfa
      */
     protected function distill(ExecuteTaskEvent $event): int
     {
-        $params    = $event->getArgument('params');
-        $batchSize = max(1, (int) ($params->batch ?? 10));
-        $language  = $this->getApplication()->getLanguage();
+        $params      = $event->getArgument('params');
+        $requestSize = max(1, (int) ($params->request_size ?? DistillerModel::DEFAULT_REQUEST_SIZE));
+        $budget      = new TimeBudget((int) ($params->time_budget ?? 0));
+        $language    = $this->getApplication()->getLanguage();
 
         /** @var ComponentInterface&MVCFactoryServiceInterface $component */
         $component = $this->getApplication()->bootComponent('com_translations');
@@ -97,7 +99,7 @@ final class TranslationsDistiller extends CMSPlugin implements SubscriberInterfa
         $model = $component->getMVCFactory()->createModel('Distiller', 'Administrator', ['ignore_request' => true]);
 
         try {
-            $result = $model->distill($batchSize);
+            $result = $model->distill($requestSize, $budget);
         } catch (\Throwable $e) {
             return $this->knockout($e->getMessage());
         }

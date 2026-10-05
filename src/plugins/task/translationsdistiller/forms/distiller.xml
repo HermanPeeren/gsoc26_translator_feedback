@@ -3,13 +3,24 @@
 	<fields name="params">
 		<fieldset name="task_params">
 			<field
-				name="batch"
+				name="request_size"
 				type="number"
-				label="PLG_TASK_TRANSLATIONSDISTILLER_BATCH_LABEL"
-				description="PLG_TASK_TRANSLATIONSDISTILLER_BATCH_DESC"
+				label="PLG_TASK_TRANSLATIONSDISTILLER_REQUEST_SIZE_LABEL"
+				description="PLG_TASK_TRANSLATIONSDISTILLER_REQUEST_SIZE_DESC"
 				required="true"
-				default="10"
+				default="50"
 				min="1"
+				max="200"
+				step="1"
+				filter="int"
+			/>
+			<field
+				name="time_budget"
+				type="number"
+				label="PLG_TASK_TRANSLATIONSDISTILLER_TIME_BUDGET_LABEL"
+				description="PLG_TASK_TRANSLATIONSDISTILLER_TIME_BUDGET_DESC"
+				default="0"
+				min="0"
 				step="1"
 				filter="int"
 			/>
