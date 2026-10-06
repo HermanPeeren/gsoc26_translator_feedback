@@ -142,3 +142,11 @@ commit the tag points at.
 
 The seed plugin carries its own version and is released under the same tag as a second
 download; the workflow says so in its log when the two differ.
+
+Once both downloads are published, the workflow writes their SHA-512 checksums into the update
+files with `php build/update-xml.php --checksum` and commits that to `main` itself. Joomla
+checks a downloaded update against that checksum, and warns when there is none. The checksum
+has to come from the workflow because a zip built on another machine has different timestamps
+and line endings, so its hash does not match. Pull `main` after a release, before the next
+version bump. Running `build/update-xml.php` without `--checksum` keeps a committed checksum
+while the download stays the same, and drops it when the version changes.

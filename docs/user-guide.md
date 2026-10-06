@@ -300,8 +300,8 @@ The distil task has two settings:
   sent.
 - **Time per Run (seconds)**: a run keeps sending requests until this time is used up, and
   stops before a request that would probably not finish in time; the next run carries on.
-  With **0** a run takes 240 seconds when the scheduler runs from the command line, and 25
-  seconds when it runs over the web.
+  With **0** a run takes 25 seconds over the web and 240 seconds from the command line. With
+  Web Cron called every minute, 110 is a good value (see "Running the scheduler" below).
 
 Every request to the provider is paid for, so a request that fails is not repeated without
 end. A feedback item whose request fails is tried again in a later run, in a request half the
@@ -315,32 +315,73 @@ is answered, so a run that stops part-way keeps everything it finished.
 
 ### Running the scheduler
 
-Joomla starts scheduled tasks in one of three ways. Choose one in **System, Manage, Scheduled
-Tasks, Options**:
+The translate, seed and distil tasks are scheduled tasks like any other, managed in **System,
+Manage, Scheduled Tasks**. Joomla starts them over the web, and for regular work on a site
+**Web Cron** is the way to do that.
 
-- **From the command line, with cron (recommended).** Have your host run this every minute:
+#### With Web Cron
 
-  ```
-  php /path/to/your/site/cli/joomla.php scheduler:run --all
-  ```
+1. In **System, Manage, Scheduled Tasks, Options**, enable **Web Cron**, and switch the
+   **Lazy Scheduler** off.
+2. Give the **Webcron Link** shown there to the cron service of your hosting, or to an
+   external cron service, to be called **every minute**.
 
-  Without `--all` only one due task runs per minute, so the seed and distil tasks take turns.
-  A single task can be run with `scheduler:run --id=<task id>`. On the command line PHP has
-  no time limit, and a run uses its full time budget.
-- **Web cron**, for hosting without command-line cron. Enable **Web Cron** in the Options and
-  let an external cron service call the URL shown there every minute. Each call is a short
-  web request, so leave **Time per Run** at 0 (25 seconds). If the host still cuts requests
-  off, lower **Corrections per Request** to 25.
-- **Lazy scheduler**: tasks run when someone visits the site. Fine for small amounts of work,
-  too slow for a whole language pack.
+Each call is a web request that starts one due task, and none while another task is still
+running, so the seed and distil tasks take turns. A run stops after its **Time per Run**, and
+the next call starts the next run.
 
-Keep the **Task Timeout (seconds)** in the Options (300 by default) above the **Time per
-Run** of your tasks. A task that runs longer than that timeout can be started a second time
-while the first run is still busy.
+Recommended settings for seeding a language pack with Web Cron:
+
+| Where | Setting | Value | Why |
+| --- | --- | --- | --- |
+| Seed task | Strings per Request | 25 | The default; a request takes about ten seconds. |
+| Seed task | Time per Run (seconds) | 110 | See below. |
+| Seed task | Schedule | every minute | The tasks take turns anyway; this keeps no minute unused. |
+| Distil task | Corrections per Request | 50 | The default; a request takes about 25 seconds at low effort. |
+| Distil task | Time per Run (seconds) | 110 | See below. |
+| Distil task | Schedule | every minute | As for the seed task. |
+| Scheduled Tasks Options | Task Timeout (seconds) | 600 | See below. |
+| Scheduled Tasks Options | Lazy Scheduler | off | One scheduler is enough. |
+| Translation - Claude, RAG - Claude | Effort | Low | The cheapest and fastest; see "Installing and setting up". |
+| Translation - Claude, RAG - Claude | Timeout (seconds) | 300 | The default. |
+
+- **Time per Run 110 seconds.** With 0, a run over the web takes 25 seconds, which fits the
+  time limits of nearly any hosting, but a whole language pack then takes four to five hours.
+  With 110, a run ends just before the call two minutes after it started, so that call starts
+  the next run; the call in between finds a task running and does nothing. About ten seed
+  requests or four distil requests fit in one run, and a pack takes about 1.5 to 2 hours. This
+  needs hosting that lets a web request run about two minutes. If runs are cut off, lower it,
+  for example to 60.
+- **Task Timeout 600 seconds.** Joomla keeps a running task locked until it finishes, or until
+  this time has passed. A run takes at most its Time per Run plus the Timeout of one request
+  that was still under way, 410 seconds here, so the same task is never started twice. If the
+  hosting does cut a run off, its lock stays until the Task Timeout has passed, and over Web
+  Cron no task starts in the meantime; the tasks then wait up to ten minutes, without losing
+  anything.
+- **When the cron service stops waiting early**, nothing is lost: the results of each request
+  are saved as soon as they come in, so at worst the last request of a run is sent again in a
+  later run.
+
+#### From the command line, for long-running work
+
+Seeding a whole language pack is time-intensive work. When your hosting lets you add cronjobs
+that run a command, Joomla can also start its scheduled tasks from the command line, where no
+web time limit applies; the tasks stay managed in the Administrator as before. The Joomla
+User Manual explains the set-up in [How to Run Scheduled Tasks from the Command Line](https://guide.joomla.org/user-manual/scheduled-tasks/run-task-from-cli).
+For this component:
+
+- Let the cronjob run `scheduler:run --all` every minute, so the seed and distil tasks run
+  side by side instead of taking turns, and switch Web Cron off while you use it.
+- Leave **Time per Run** at 0 in both tasks: from the command line a run then takes 240
+  seconds.
+- Keep the **Task Timeout** at 600 seconds and the other settings as in the table above.
+
+The **Lazy Scheduler**, which runs tasks when someone visits the site, is fine for small
+amounts of work but too slow for a whole language pack.
 
 ### Maintenance tasks
 
-Three more task types fix things after the fact. Create them as tasks without a schedule and
+Four more task types fix things after the fact. Create them as tasks without a schedule and
 start them with **Run Test** in the list of Scheduled Tasks:
 
 - **Retry Failed Translator Feedback** gives the feedback rows set aside as `failed` a new set
@@ -374,10 +415,9 @@ The seed task is optional and a separate download:
    Pack** task and set:
    - **Language**: the installed language to learn from.
    - **Strings per Request** (25 by default): how many texts go to the provider in one request.
-   - **Time per Run (seconds)**: as for the distil task; 0 means 240 seconds from the command
-     line and 25 seconds over the web. A run that seeded strings and leaves some for later is
-     followed straight away by the next one, so a whole pack is worked through over several
-     runs.
+   - **Time per Run (seconds)**: as for the distil task; 110 with Web Cron called every minute
+     (see "Running the scheduler"). A run that seeded strings and leaves some for later is
+     followed by the next one, so a whole pack is worked through over several runs.
    - **Language Files**: a comma separated list such as `com_content.ini`, or empty to read the
      whole pack.
 
@@ -416,9 +456,10 @@ earlier seeding:
 2. Run the seed task for that language again, and let the distil task follow.
 
 Seed version 1.2.0 needs version 1.2.0 of the package, because it records how many strings a
-feedback row stands for. For a whole core language pack, plan for roughly an hour and a half
-of seeding and distilling with the command-line scheduler. The API cost was estimated at
-$8-12 per pack with Claude Sonnet at low effort; it depends on the language and the model.
+feedback row stands for. For a whole core language pack, plan for about 1.5 to 2 hours of
+seeding and distilling with the settings in "Running the scheduler". The API cost was
+estimated at $8-12 per pack with Claude Sonnet at low effort; it depends on the language and
+the model.
 
 ## Translators working from the site
 
