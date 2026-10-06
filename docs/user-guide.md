@@ -376,6 +376,12 @@ For this component:
   seconds.
 - Keep the **Task Timeout** at 600 seconds and the other settings as in the table above.
 
+From the command line Joomla can start a task while the same task is still running in an
+earlier process: `scheduler:run` does not check a task's lock. The seed and distil tasks
+guard against that themselves (since version 1.2.1): a run that finds another run of the same
+job busy - the distiller, or the seed task for the same language - does nothing and logs that
+another run is still busy, so nothing is sent or paid for twice.
+
 The **Lazy Scheduler**, which runs tasks when someone visits the site, is fine for small
 amounts of work but too slow for a whole language pack.
 

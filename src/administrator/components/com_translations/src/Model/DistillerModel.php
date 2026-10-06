@@ -22,6 +22,7 @@ use Joomla\CMS\Plugin\PluginHelper;
 use Joomla\Component\Translations\Administrator\Event\DistilEvent;
 use Joomla\Component\Translations\Administrator\Helper\RuleMerger;
 use Joomla\Component\Translations\Administrator\Helper\RuleRetriever;
+use Joomla\Component\Translations\Administrator\Helper\RunLock;
 use Joomla\Component\Translations\Administrator\Helper\RunResult;
 use Joomla\Component\Translations\Administrator\Helper\TimeBudget;
 use Joomla\Component\Translations\Administrator\Helper\WordNormaliser;
@@ -165,8 +166,42 @@ class DistillerModel extends BaseDatabaseModel
             throw new \RuntimeException('No distillation provider is enabled. Enable a RAG plugin to distil rules.');
         }
 
-        $budget         = $budget ?? new TimeBudget();
-        $result         = new RunResult();
+        $budget = $budget ?? new TimeBudget();
+        $result = new RunResult();
+        $lock   = new RunLock($this->getDatabase(), 'distil');
+
+        // Another run would pick the same pending rows and pay for them a second time.
+        if (!$lock->acquire()) {
+            $result->busy      = true;
+            $result->remaining = $this->countPendingFeedback();
+
+            return $result;
+        }
+
+        try {
+            $this->distilWithinBudget($requestSize, $budget, $result);
+        } finally {
+            $lock->release();
+        }
+
+        $result->remaining = $this->countPendingFeedback();
+
+        return $result;
+    }
+
+    /**
+     * Send requests until the budget is used up, the work is done, or the provider keeps failing.
+     *
+     * @param   integer     $requestSize  The most corrections in one request.
+     * @param   TimeBudget  $budget       How long the run may keep sending requests.
+     * @param   RunResult   $result       The run's result, updated in place.
+     *
+     * @return  void
+     *
+     * @since   1.2.1
+     */
+    private function distilWithinBudget(int $requestSize, TimeBudget $budget, RunResult $result): void
+    {
         $sourceLanguage = (string) ComponentHelper::getParams('com_translations')->get('source_language', 'en-GB');
         $tried          = [];
         $failures       = 0;
@@ -199,10 +234,6 @@ class DistillerModel extends BaseDatabaseModel
                 break;
             }
         }
-
-        $result->remaining = $this->countPendingFeedback();
-
-        return $result;
     }
 
     /**
@@ -246,7 +277,18 @@ class DistillerModel extends BaseDatabaseModel
      */
     public function mergeDuplicateRules(string $language = ''): int
     {
-        return RuleMerger::mergeDuplicates($this->getDatabase(), $language);
+        $lock = new RunLock($this->getDatabase(), 'distil');
+
+        // A distil run writes rules while it runs, so merging waits until it has finished.
+        if (!$lock->acquire()) {
+            throw new \RuntimeException('A distil run is still busy, so the rules are not merged now. Run this task again later.');
+        }
+
+        try {
+            return RuleMerger::mergeDuplicates($this->getDatabase(), $language);
+        } finally {
+            $lock->release();
+        }
     }
 
     /**

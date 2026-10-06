@@ -134,6 +134,12 @@ final class TranslationsSeed extends CMSPlugin implements SubscriberInterface
             return $this->knockout($e->getMessage());
         }
 
+        if ($result->busy) {
+            $this->logTask(\sprintf($language->_('PLG_TASK_TRANSLATIONSSEED_LOG_BUSY'), $targetLanguage));
+
+            return Status::OK;
+        }
+
         if ($result->processed === 0 && $result->failed === 0) {
             $this->logTask(\sprintf($language->_('PLG_TASK_TRANSLATIONSSEED_LOG_NONE'), $targetLanguage));
 

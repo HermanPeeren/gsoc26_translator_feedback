@@ -15,6 +15,7 @@ namespace Joomla\Plugin\Task\TranslationsSeed\Helper;
 // phpcs:enable PSR1.Files.SideEffects
 
 use Joomla\CMS\Plugin\PluginHelper;
+use Joomla\Component\Translations\Administrator\Helper\RunLock;
 use Joomla\Component\Translations\Administrator\Helper\RunResult;
 use Joomla\Component\Translations\Administrator\Helper\StringTranslator;
 use Joomla\Component\Translations\Administrator\Helper\TimeBudget;
@@ -167,7 +168,48 @@ class Seeder
             );
         }
 
-        $result   = new RunResult();
+        $result = new RunResult();
+        $lock   = new RunLock($this->db, 'seed ' . $targetLanguage);
+
+        // Another run for the same language would send the same strings and pay for them twice.
+        if (!$lock->acquire()) {
+            $result->busy = true;
+
+            return $result;
+        }
+
+        try {
+            $this->seedWithinBudget($sourceLanguage, $targetLanguage, $requestSize, $budget, $fileNames, $result);
+        } finally {
+            $lock->release();
+        }
+
+        return $result;
+    }
+
+    /**
+     * Send the pending strings until the budget is used up, the work is done, or the provider
+     * keeps failing.
+     *
+     * @param   string      $sourceLanguage  The language tag the strings are written in.
+     * @param   string      $targetLanguage  The language tag of the pack to learn from.
+     * @param   integer     $requestSize     The most distinct texts sent in one request.
+     * @param   TimeBudget  $budget          How long the run may keep sending requests.
+     * @param   string[]    $fileNames       The language file names to read, all of them when empty.
+     * @param   RunResult   $result          The run's result, updated in place.
+     *
+     * @return  void
+     *
+     * @since   1.2.1
+     */
+    private function seedWithinBudget(
+        string $sourceLanguage,
+        string $targetLanguage,
+        int $requestSize,
+        TimeBudget $budget,
+        array $fileNames,
+        RunResult $result
+    ): void {
         $pending  = $this->pendingPairs($sourceLanguage, $targetLanguage, $fileNames);
         $failures = 0;
 
@@ -212,8 +254,6 @@ class Seeder
         }
 
         $result->remaining = max(0, \count($pending) - $result->processed - $result->quarantined);
-
-        return $result;
     }
 
     /**
@@ -266,7 +306,36 @@ class Seeder
 
         $origin = self::SOURCE_ORIGIN;
         $counts = [];
+        $lock   = new RunLock($this->db, 'seed ' . $targetLanguage);
 
+        // A seed run for the language would go on writing what is being forgotten.
+        if (!$lock->acquire()) {
+            throw new \RuntimeException(
+                \sprintf('A seed run for %s is still busy, so nothing is forgotten now. Run this task again later.', $targetLanguage)
+            );
+        }
+
+        try {
+            return $this->forgetLocked($targetLanguage, $includePublished, $origin, $counts);
+        } finally {
+            $lock->release();
+        }
+    }
+
+    /**
+     * Forget what was seeded for a language, while this run holds the language's seed lock.
+     *
+     * @param   string   $targetLanguage    The language to forget.
+     * @param   boolean  $includePublished  Whether published rules learned from the pack are trashed too.
+     * @param   string   $origin            The origin of what the seed task writes.
+     * @param   array    $counts            The counts so far.
+     *
+     * @return  array  The numbers of strings forgotten, feedback rows deleted and rules trashed.
+     *
+     * @since   1.2.1
+     */
+    private function forgetLocked(string $targetLanguage, bool $includePublished, string $origin, array $counts): array
+    {
         $this->db->transactionStart();
 
         try {

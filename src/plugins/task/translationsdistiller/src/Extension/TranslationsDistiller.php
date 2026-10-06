@@ -107,6 +107,12 @@ final class TranslationsDistiller extends CMSPlugin implements SubscriberInterfa
             return $this->knockout($e->getMessage());
         }
 
+        if ($result->busy) {
+            $this->logTask($language->_('PLG_TASK_TRANSLATIONSDISTILLER_LOG_BUSY'));
+
+            return Status::OK;
+        }
+
         if ($result->processed === 0 && $result->failed === 0) {
             $this->logTask($language->_('PLG_TASK_TRANSLATIONSDISTILLER_LOG_NONE'));
 
