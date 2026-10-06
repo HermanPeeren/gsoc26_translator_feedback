@@ -315,32 +315,41 @@ is answered, so a run that stops part-way keeps everything it finished.
 
 ### Running the scheduler
 
-Joomla starts scheduled tasks in one of three ways. Choose one in **System, Manage, Scheduled
-Tasks, Options**:
+Joomla can start scheduled tasks in three ways. Use one of them:
 
-- **From the command line, with cron (recommended).** Have your host run this every minute:
+- **A command on your server (recommended when your hosting allows it).** Add a cronjob of
+  the *command* type that runs every minute, with the path to PHP and to your site:
 
   ```
-  php /path/to/your/site/cli/joomla.php scheduler:run --all
+  /usr/bin/php /path/to/your/site/cli/joomla.php scheduler:run --all > /dev/null 2>&1
   ```
 
-  Without `--all` only one due task runs per minute, so the seed and distil tasks take turns.
-  A single task can be run with `scheduler:run --id=<task id>`. On the command line PHP has
-  no time limit, and a run uses its full time budget.
-- **Web cron**, for hosting without command-line cron. Enable **Web Cron** in the Options and
-  let an external cron service call the URL shown there every minute. Each call is a short
-  web request, so leave **Time per Run** at 0 (25 seconds). If the host still cuts requests
-  off, lower **Corrections per Request** to 25.
-- **Lazy scheduler**: tasks run when someone visits the site. Fine for small amounts of work,
+  This runs Joomla's own console application, not a web request, so there is no web time
+  limit. Leave **Time per Run** at 0: a run then takes 240 seconds. `--all` runs every due
+  task; without it each run starts only the next due task, so the seed and distil tasks take
+  turns. `scheduler:run --id=<task id>` runs one task straight away. Nothing has to be
+  switched on for this; switch the Web Cron and the Lazy Scheduler off in the Scheduled Tasks
+  options. The Joomla User Manual describes this set-up as *How to Run Scheduled Tasks from
+  the Command Line*.
+- **Web Cron**, when your hosting can only call a URL. Enable **Web Cron** in **System,
+  Manage, Scheduled Tasks, Options** and let the cron service call the link shown there every
+  minute. Each call is a web request that starts one task, and none while another task is
+  still running. With **Time per Run** at 0 a run takes 25 seconds, which fits within the time
+  limits of nearly any hosting, but a whole language pack then takes four to five hours. When
+  your hosting allows longer web requests, set **Time per Run** to 110 seconds in both tasks:
+  a run then ends just before the cron call two minutes later, which starts the next one, and
+  a pack takes about 1.5 to 2 hours. If runs are cut off, lower it again.
+- **Lazy Scheduler**: tasks run when someone visits the site. Fine for small amounts of work,
   too slow for a whole language pack.
 
-Keep the **Task Timeout (seconds)** in the Options (300 by default) above the **Time per
-Run** of your tasks. A task that runs longer than that timeout can be started a second time
-while the first run is still busy.
+Set the **Task Timeout (seconds)** in the Scheduled Tasks options to 600. Joomla releases a
+running task's lock after this time, and a run can take its **Time per Run** plus the
+**Timeout** of a request that was still under way. With a lower setting, a slow run could be
+started a second time while it is still busy.
 
 ### Maintenance tasks
 
-Three more task types fix things after the fact. Create them as tasks without a schedule and
+Four more task types fix things after the fact. Create them as tasks without a schedule and
 start them with **Run Test** in the list of Scheduled Tasks:
 
 - **Retry Failed Translator Feedback** gives the feedback rows set aside as `failed` a new set
