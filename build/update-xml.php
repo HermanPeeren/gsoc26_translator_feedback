@@ -4,6 +4,7 @@
  * Writes the update files an installed site reads to learn that a new version exists.
  *
  *   php build/update-xml.php
+ *   php build/update-xml.php --checksum   also hash the archives in build/ (release workflow)
  *
  * Joomla asks the URL in each manifest's <updateservers> what the newest version is, and
  * downloads whatever the answer points at. That makes these two files part of the release
@@ -92,12 +93,65 @@ if (!is_dir($directory) && !mkdir($directory, 0755, true) && !is_dir($directory)
     exit(1);
 }
 
+// The release workflow passes --checksum once it has built the archives. See checksum().
+$hashArchives = \in_array('--checksum', $argv, true);
+
+/**
+ * The SHA-512 of a download, which Joomla checks the downloaded file against.
+ *
+ * Without one, Joomla warns after an update that the integrity of the file could not be
+ * validated. Only the release workflow can know it: the archive is built there, and one built
+ * on another machine differs in timestamps and line endings even when its contents do not. So
+ * the workflow runs this script with --checksum after the build, which hashes the archive it
+ * is about to publish, and commits the result to main, where the update files are served from.
+ *
+ * Run without --checksum, the checksum already committed is kept for as long as it describes
+ * the same download, so regenerating changes nothing between releases. When the version moves
+ * on the download URL changes with it, and the checksum is dropped: it belongs to the previous
+ * archive, and a wrong checksum stops the update where a missing one only warns.
+ *
+ * @param   string   $target    The update file.
+ * @param   string   $download  The download URL it is about to name.
+ * @param   string   $archive   The archive's file name in build/.
+ * @param   boolean  $hash      Whether to hash the built archive.
+ *
+ * @return  ?string  The checksum, or null when there is none to give.
+ */
+function checksum(string $target, string $download, string $archive, bool $hash): ?string
+{
+    if ($hash) {
+        $path = ROOT . '/build/' . $archive;
+
+        if (!is_file($path)) {
+            fwrite(STDERR, '--checksum hashes the built archive, and there is none at build/' . $archive . "\n");
+            exit(1);
+        }
+
+        return hash_file('sha512', $path);
+    }
+
+    $committed = is_file($target) ? simplexml_load_file($target) : false;
+
+    if ($committed === false || trim((string) $committed->update->downloads->downloadurl) !== $download) {
+        return null;
+    }
+
+    return trim((string) $committed->update->sha512) ?: null;
+}
+
 // A package and a plugin install as site extensions, and an update that does not say so is taken
 // for administrator and matches nothing.
 foreach ($updates as $file => $update) {
     $folder = $update['folder'] === null
         ? ''
         : \sprintf("        <folder>%s</folder>\n", $update['folder']);
+
+    $target   = $directory . '/' . $file . '.xml';
+    $download = REPOSITORY . '/releases/download/' . $tag . '/' . $update['archive'];
+    $sha512   = checksum($target, $download, $update['archive'], $hashArchives);
+    $checksum = $sha512 === null
+        ? ''
+        : \sprintf("        <sha512>%s</sha512>\n", $sha512);
 
     $xml = \sprintf(
         '<?xml version="1.0" encoding="utf-8"?>
@@ -112,9 +166,9 @@ foreach ($updates as $file => $update) {
         <version>%6$s</version>
         <infourl title="Translator Feedback">%7$s</infourl>
         <downloads>
-            <downloadurl type="full" format="zip">%7$s/releases/download/%8$s/%9$s</downloadurl>
+            <downloadurl type="full" format="zip">%8$s</downloadurl>
         </downloads>
-        <tags>
+%9$s        <tags>
             <tag>stable</tag>
         </tags>
         <targetplatform name="joomla" version="6\.[0-9]+"/>
@@ -131,15 +185,19 @@ foreach ($updates as $file => $update) {
         $folder,
         $update['version'],
         REPOSITORY,
-        $tag,
-        $update['archive']
+        $download,
+        $checksum
     );
-
-    $target = $directory . '/' . $file . '.xml';
 
     file_put_contents($target, $xml);
 
-    printf("%-30s %s -> %s\n", $file, $update['version'], $update['archive']);
+    printf(
+        "%-30s %s -> %s, %s\n",
+        $file,
+        $update['version'],
+        $update['archive'],
+        $sha512 === null ? 'without a checksum' : 'with its checksum'
+    );
 }
 
 printf("\nRelease tag the downloads are expected on: %s\n", $tag);
