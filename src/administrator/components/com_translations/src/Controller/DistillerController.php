@@ -65,7 +65,9 @@ class DistillerController extends BaseController
                 );
             }
 
-            if ($result->processed === 0 && $result->failed === 0) {
+            if ($result->busy) {
+                $app->enqueueMessage(Text::_('COM_TRANSLATIONS_DISTILL_BUSY'), 'warning');
+            } elseif ($result->processed === 0 && $result->failed === 0) {
                 $app->enqueueMessage(Text::_('COM_TRANSLATIONS_DISTILL_NONE'), 'info');
             }
         } catch (\Throwable $e) {

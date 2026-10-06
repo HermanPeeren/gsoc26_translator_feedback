@@ -101,6 +101,14 @@ final class RunResult
     public $aborted = false;
 
     /**
+     * Whether the run did nothing because another run of the same job was still busy.
+     *
+     * @var    boolean
+     * @since  1.2.1
+     */
+    public $busy = false;
+
+    /**
      * The last error a failed item gave, for the log.
      *
      * @var    string

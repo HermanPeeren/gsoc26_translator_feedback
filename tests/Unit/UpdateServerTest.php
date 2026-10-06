@@ -145,6 +145,36 @@ final class UpdateServerTest extends TestCase
     }
 
     /**
+     * A checksum, when the update file carries one, is a SHA-512 and nothing else.
+     *
+     * The release workflow writes it once the archive is built. Joomla refuses a download
+     * whose hash does not match, so a malformed one stops the update where a missing one
+     * only warns. Joomla checks every hash element it finds, so one stray sha256 left behind
+     * would have to match as well.
+     *
+     * @param   string  $manifest    The extension's manifest.
+     * @param   string  $updateFile  The update file that describes it.
+     *
+     * @return  void
+     *
+     * @dataProvider  releasedExtensions
+     *
+     * @since   1.2.1
+     */
+    public function testAChecksumIsASha512(string $manifest, string $updateFile): void
+    {
+        $update = simplexml_load_file(self::path($updateFile))->update;
+
+        $this->assertCount(0, $update->sha256, 'build/update-xml.php writes sha512 only');
+        $this->assertCount(0, $update->sha384, 'build/update-xml.php writes sha512 only');
+        $this->assertLessThanOrEqual(1, \count($update->sha512));
+
+        if (\count($update->sha512) === 1) {
+            $this->assertMatchesRegularExpression('/^[0-9a-f]{128}$/', trim((string) $update->sha512));
+        }
+    }
+
+    /**
      * The update file names the extension the way Joomla stores it.
      *
      * Joomla matches an update against an installed extension on the element, the type, the
