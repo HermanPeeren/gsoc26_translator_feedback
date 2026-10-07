@@ -998,6 +998,10 @@ class DistillerModel extends BaseDatabaseModel
         $feedbackIds = array_values(array_unique(array_map('intval', (array) ($candidate['source_feedback_ids'] ?? []))));
         $existingId  = (int) ($candidate['id'] ?? 0);
 
+        if (!self::hasEvidence($candidate, array_keys($origins))) {
+            throw new \RuntimeException('The rule has no confidence or no correction of this request behind it.');
+        }
+
         // The rule fields the provider (re)states each time. Bind them (rather than set them
         // directly) so the table's _jsonEncode encodes source_feedback_ids and the array is
         // not dropped by the driver on store.
@@ -1015,6 +1019,14 @@ class DistillerModel extends BaseDatabaseModel
             'target_term'          => $this->nullableTerm($candidate['target_term'] ?? null),
             'search_keywords'      => (string) ($candidate['search_keywords'] ?? ''),
         ];
+
+        // An id refines only a live rule of the same language; any other id the provider gives
+        // (a rule it misremembers, or a trashed one) is treated as no id at all.
+        if ($existingId > 0 && !$this->isLiveRule($table, $existingId, $targetLanguage)) {
+            $table->reset();
+            $table->id  = null;
+            $existingId = 0;
+        }
 
         // A provider sees only the rules that fit its corrections, so it can offer as new a rule
         // that already exists. Such a rule refines the existing one instead of duplicating it.
@@ -1108,6 +1120,47 @@ class DistillerModel extends BaseDatabaseModel
         $term = trim((string) $term);
 
         return $term === '' ? null : $term;
+    }
+
+    /**
+     * Whether a rule candidate is backed by this request: a confidence above zero, and at least
+     * one of the corrections it was sent. A rule without that is something the provider made up.
+     *
+     * @param   array  $candidate   The rule candidate.
+     * @param   int[]  $requestIds  The ids of the feedback rows in the request.
+     *
+     * @return  boolean
+     *
+     * @since   1.2.2
+     */
+    private static function hasEvidence(array $candidate, array $requestIds): bool
+    {
+        if ((float) ($candidate['confidence'] ?? 0) <= 0) {
+            return false;
+        }
+
+        $feedbackIds = array_map('intval', (array) ($candidate['source_feedback_ids'] ?? []));
+
+        return array_intersect($feedbackIds, array_map('intval', $requestIds)) !== [];
+    }
+
+    /**
+     * Load a rule into the table and tell whether it is live (unpublished or published) and in
+     * the given language, so a candidate may refine it.
+     *
+     * @param   RuleTable  $table           The rule table.
+     * @param   integer    $id              The rule id the candidate gave.
+     * @param   string     $targetLanguage  The language of the request.
+     *
+     * @return  boolean
+     *
+     * @since   1.2.2
+     */
+    private function isLiveRule(RuleTable $table, int $id, string $targetLanguage): bool
+    {
+        return $table->load($id)
+            && \in_array((int) $table->state, self::CONTEXT_STATES, true)
+            && (string) $table->target_language === $targetLanguage;
     }
 
     /**
