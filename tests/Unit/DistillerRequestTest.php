@@ -193,6 +193,25 @@ final class DistillerRequestTest extends TestCase
     }
 
     /**
+     * A rule is kept only when it has a confidence and a correction of the request behind it.
+     *
+     * @return  void
+     *
+     * @since   1.2.2
+     */
+    public function testARuleNeedsEvidenceFromTheRequest(): void
+    {
+        $requestIds = [101, 102, 103];
+
+        $this->assertTrue(self::hasEvidence(['confidence' => 0.8, 'source_feedback_ids' => [102]], $requestIds));
+        $this->assertTrue(self::hasEvidence(['confidence' => 0.6, 'source_feedback_ids' => ['103', 999]], $requestIds));
+        $this->assertFalse(self::hasEvidence(['confidence' => 0, 'source_feedback_ids' => [101]], $requestIds));
+        $this->assertFalse(self::hasEvidence(['confidence' => 0.9, 'source_feedback_ids' => []], $requestIds));
+        $this->assertFalse(self::hasEvidence(['confidence' => 0.9, 'source_feedback_ids' => [999]], $requestIds));
+        $this->assertFalse(self::hasEvidence(['rule_text' => 'placeholder'], $requestIds));
+    }
+
+    /**
      * A feedback row with only the columns the selection reads.
      *
      * @param   integer  $id        The row id.
@@ -282,6 +301,21 @@ final class DistillerRequestTest extends TestCase
     private static function excerpts(string $source, string $draft, string $correction): array
     {
         return self::callModel('excerpts', [$source, $draft, $correction]);
+    }
+
+    /**
+     * Whether a rule candidate is backed by the request, as a distil run decides it.
+     *
+     * @param   array  $candidate   The rule candidate.
+     * @param   int[]  $requestIds  The ids of the feedback rows in the request.
+     *
+     * @return  boolean
+     *
+     * @since   1.2.2
+     */
+    private static function hasEvidence(array $candidate, array $requestIds): bool
+    {
+        return self::callModel('hasEvidence', [$candidate, $requestIds]);
     }
 
     /**
