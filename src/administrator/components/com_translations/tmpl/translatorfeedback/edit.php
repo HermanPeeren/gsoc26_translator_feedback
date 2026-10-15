@@ -14,6 +14,8 @@ use Joomla\CMS\HTML\HTMLHelper;
 use Joomla\CMS\Helper\ContentHelper;
 use Joomla\CMS\Language\Text;
 use Joomla\CMS\Router\Route;
+use Joomla\CMS\Uri\Uri;
+use Joomla\Component\Translations\Administrator\Helper\RelativeUrlResolver;
 
 /** @var \Joomla\Component\Translations\Administrator\View\Translatorfeedback\HtmlView $this */
 
@@ -28,12 +30,13 @@ $targetLanguage = (string) $this->item->target_language;
 $sourceLanguage = (string) $this->item->source_language;
 
 // Render a read-only original body, falling back to a muted placeholder when the source field is empty.
+// Links and images are stored relative to the site root, so resolve them from there.
 $originalBody = function ($html) {
     if (trim((string) $html) === '') {
         return '<span class="text-muted fst-italic">' . Text::_('COM_TRANSLATIONS_TRANSLATOR_FEEDBACK_FIELD_EMPTY') . '</span>';
     }
 
-    return $html;
+    return RelativeUrlResolver::resolve($html, Uri::root(true) . '/');
 };
 
 // Render a read-only original plaintext value, falling back to a muted placeholder when empty.
