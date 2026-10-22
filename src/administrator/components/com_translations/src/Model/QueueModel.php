@@ -263,7 +263,7 @@ class QueueModel extends ListModel
         }
 
         // Filter - state (multi-select). The dropdown mixes two different kinds of value:
-        //   - real states (pending / translating / review / approved / published), stored in translation_state;
+        //   - real states (pending / translating / review / approved / published / failed), stored in translation_state;
         //   - '__none__', which is NOT stored anywhere, it is a UI-only flag for "no translation yet",
         //     meaning the item has no state row at all.
         // Because '__none__' is the absence of a row, it needs the opposite SQL (NOT EXISTS) from the real

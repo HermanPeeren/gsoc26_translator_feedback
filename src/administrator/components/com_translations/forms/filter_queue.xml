@@ -23,6 +23,7 @@
             <option value="review">COM_TRANSLATIONS_STATUS_REVIEW</option>
             <option value="approved">COM_TRANSLATIONS_STATUS_APPROVED</option>
             <option value="published">COM_TRANSLATIONS_STATUS_PUBLISHED</option>
+            <option value="failed">COM_TRANSLATIONS_STATUS_FAILED</option>
         </field>
         <field
             name="languages"

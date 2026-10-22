@@ -25,8 +25,10 @@ CREATE TABLE IF NOT EXISTS `#__translations_queue_states` (
   `id` int unsigned NOT NULL AUTO_INCREMENT,
   `queue_id` int unsigned NOT NULL,
   `target_language` char(7) NOT NULL,
-  -- Possible values: pending, translating, review, approved, published
+  -- Possible values: pending, translating, review, approved, published, failed
   `translation_state` varchar(20) NOT NULL DEFAULT 'pending',
+  `attempts` tinyint unsigned NOT NULL DEFAULT 0,
+  `last_error` varchar(500) NOT NULL DEFAULT '',
   -- The source's #__history version this translation was made from; 0 when none was recorded.
   `source_version_id` int unsigned NOT NULL DEFAULT 0,
   -- The translation as it was produced, as a JSON field map, to pair against the translator's correction.

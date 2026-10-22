@@ -13,6 +13,16 @@
 				step="1"
 				filter="int"
 			/>
+			<field
+				name="time_budget"
+				type="number"
+				label="PLG_TASK_TRANSLATIONSTRANSLATE_TIME_BUDGET_LABEL"
+				description="PLG_TASK_TRANSLATIONSTRANSLATE_TIME_BUDGET_DESC"
+				default="0"
+				min="0"
+				step="1"
+				filter="int"
+			/>
 		</fieldset>
 	</fields>
 </form>

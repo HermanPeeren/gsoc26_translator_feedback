@@ -21,13 +21,18 @@ use Joomla\CMS\Extension\ComponentInterface;
 use Joomla\CMS\MVC\Factory\MVCFactoryServiceInterface;
 use Joomla\CMS\MVC\Model\AdminModel;
 use Joomla\CMS\MVC\Model\BaseDatabaseModel;
+use Joomla\CMS\Plugin\PluginHelper;
 use Joomla\Component\Fields\Administrator\Helper\FieldsHelper;
 use Joomla\Component\Fields\Administrator\Model\FieldModel;
 use Joomla\Component\Translations\Administrator\Helper\ContentTypesHelper;
 use Joomla\Component\Translations\Administrator\Helper\RuleRetriever;
+use Joomla\Component\Translations\Administrator\Helper\RunLock;
+use Joomla\Component\Translations\Administrator\Helper\RunResult;
 use Joomla\Component\Translations\Administrator\Helper\StringTranslator;
+use Joomla\Component\Translations\Administrator\Helper\TimeBudget;
 use Joomla\Component\Translations\Administrator\Helper\TranslatableValuesHelper;
 use Joomla\Database\ParameterType;
+use Joomla\Database\QueryInterface;
 use Joomla\Registry\Registry;
 
 /**
@@ -50,6 +55,15 @@ class TranslationModel extends BaseDatabaseModel
      * @since  0.11.0
      */
     private const MAX_CONSECUTIVE_FAILURES = 2;
+
+    /**
+     * The error a translation holds while its request is under way, so an attempt that is cut
+     * off before the provider answers still says why it did not finish.
+     *
+     * @var    string
+     * @since  1.3.0
+     */
+    private const NO_ANSWER = 'No answer came back from the provider: the run stopped while it waited, most likely at a time limit of the server.';
 
     /**
      * Translate a source item into one target language.
@@ -97,48 +111,262 @@ class TranslationModel extends BaseDatabaseModel
     }
 
     /**
-     * Translate one batch of the items waiting on a translation.
+     * Translate a batch of the items waiting on a translation, for as long as the run's time
+     * budget allows.
      *
      * Work is a source item and a target language whose state row is absent, meaning the item has
      * never been translated into that language, or holds "pending", meaning the source has changed
-     * since it was.
+     * since it was or an earlier attempt failed. Each item is one request, saved as soon as it is
+     * answered. Its attempt is counted before the request is sent, so a run that is killed while it
+     * waits still uses one up; after its third failed attempt the item is set aside as failed.
      *
      * @param   integer                  $batchSize    The most items translated in one run.
      * @param   CMSApplicationInterface  $application  The application, used to boot the component.
+     * @param   TimeBudget|null          $budget       How long the run may keep sending requests; the
+     *                                                 default for where it runs when null.
      *
-     * @return  integer  The number of items translated.
+     * @return  RunResult  What the run did, and whether it should run again.
      *
-     * @throws  \RuntimeException  When translation fails repeatedly, which means the provider is unreachable.
+     * @throws  \RuntimeException  When no translation provider is enabled.
      *
      * @since   0.11.0
      */
-    public function translateBatch(int $batchSize, CMSApplicationInterface $application): int
+    public function translateBatch(int $batchSize, CMSApplicationInterface $application, ?TimeBudget $budget = null): RunResult
     {
-        $translated = 0;
-        $failures   = 0;
-
-        foreach ($this->pendingWork($batchSize) as $work) {
-            try {
-                $this->translate($work['sourceItemId'], $work['targetLanguage'], $work['contentType'], $application);
-
-                $translated++;
-                $failures = 0;
-            } catch (\Throwable $e) {
-                $failures++;
-
-                // The state row is left untouched, so a provider that comes back finds the same work
-                // waiting rather than a queue of items stranded mid-translation.
-                if ($failures === self::MAX_CONSECUTIVE_FAILURES) {
-                    throw new \RuntimeException(
-                        \sprintf('Stopped after %d failures in a row, the last being: %s', $failures, $e->getMessage()),
-                        0,
-                        $e
-                    );
-                }
-            }
+        // Without a provider every request would fail and use up an attempt of items that are fine.
+        if (PluginHelper::getPlugin('translation') === []) {
+            throw new \RuntimeException('No translation provider is enabled. Enable a translation plugin to translate content.');
         }
 
-        return $translated;
+        $budget = $budget ?? new TimeBudget();
+        $result = new RunResult();
+        $lock   = new RunLock($this->getDatabase(), 'translate');
+
+        // Another run would pick the same items, pay for them a second time and save a second draft.
+        if (!$lock->acquire()) {
+            $result->busy      = true;
+            $result->remaining = $this->countPendingWork();
+
+            return $result;
+        }
+
+        try {
+            $this->setAsideUnanswered($result);
+            $this->translateWithinBudget($batchSize, $application, $budget, $result);
+        } finally {
+            $lock->release();
+        }
+
+        $result->remaining = $this->countPendingWork();
+
+        return $result;
+    }
+
+    /**
+     * Give the translations that were set aside as failed a new set of attempts.
+     *
+     * For use once the cause of the failures is fixed, such as an invalid model or an empty
+     * credit balance.
+     *
+     * @return  integer  The number of translations made pending again.
+     *
+     * @since   1.3.0
+     */
+    public function resetFailed(): int
+    {
+        $failed    = 'failed';
+        $pending   = 'pending';
+        $lastError = '';
+        $db        = $this->getDatabase();
+        $query     = $db->getQuery(true)
+            ->update($db->quoteName('#__translations_queue_states'))
+            ->set($db->quoteName('translation_state') . ' = :pending')
+            ->set($db->quoteName('attempts') . ' = 0')
+            ->set($db->quoteName('last_error') . ' = :lastError')
+            ->where($db->quoteName('translation_state') . ' = :failed')
+            ->bind(':pending', $pending, ParameterType::STRING)
+            ->bind(':lastError', $lastError, ParameterType::STRING)
+            ->bind(':failed', $failed, ParameterType::STRING);
+        $db->setQuery($query)->execute();
+
+        return $db->getAffectedRows();
+    }
+
+    /**
+     * Send requests until the batch is done, the budget is used up, or the provider keeps failing.
+     *
+     * The work is chosen once, at the start, so an item that fails is not tried again in the same
+     * run but waits for a later one.
+     *
+     * @param   integer                  $batchSize    The most items translated in one run.
+     * @param   CMSApplicationInterface  $application  The application, used to boot the component.
+     * @param   TimeBudget               $budget       How long the run may keep sending requests.
+     * @param   RunResult                $result       The run's result, updated in place.
+     *
+     * @return  void
+     *
+     * @since   1.3.0
+     */
+    private function translateWithinBudget(int $batchSize, CMSApplicationInterface $application, TimeBudget $budget, RunResult $result): void
+    {
+        $failures = 0;
+
+        foreach ($this->pendingWork($batchSize) as $work) {
+            if (!$budget->allowsAnother()) {
+                break;
+            }
+
+            $stateId = $this->countAttempt($work);
+            $budget->startRequest();
+
+            try {
+                $this->translate($work['sourceItemId'], $work['targetLanguage'], $work['contentType'], $application);
+            } catch (\Throwable $e) {
+                $budget->endRequest();
+                $this->recordFailure($stateId, $e->getMessage(), $result);
+
+                if (++$failures === self::MAX_CONSECUTIVE_FAILURES) {
+                    $result->aborted   = true;
+                    $result->lastError = \sprintf(
+                        'Stopped after %d failures in a row, the last being: %s',
+                        $failures,
+                        $result->lastError
+                    );
+
+                    break;
+                }
+
+                continue;
+            }
+
+            $budget->endRequest();
+            $result->processed++;
+            $failures = 0;
+        }
+    }
+
+    /**
+     * Count an attempt for one item of work, before its request is sent.
+     *
+     * An item never translated into the language gets its queue and state rows here, so the attempt
+     * has somewhere to be counted. The error is set to say no answer came back, and stays so when the
+     * run is killed while it waits; an answer, or a failure that is caught, replaces it.
+     *
+     * @param   array{contentType: string, sourceItemId: int, targetLanguage: string, stateId: int|null}  $work  The item of work.
+     *
+     * @return  integer  The id of the item's state row.
+     *
+     * @since   1.3.0
+     */
+    private function countAttempt(array $work): int
+    {
+        $db        = $this->getDatabase();
+        $lastError = self::NO_ANSWER;
+
+        if ($work['stateId'] === null) {
+            $stateRow = (object) [
+                'queue_id'          => $this->getOrCreateQueueId($work['sourceItemId'], $work['contentType']),
+                'target_language'   => $work['targetLanguage'],
+                'translation_state' => 'pending',
+                'attempts'          => 1,
+                'last_error'        => $lastError,
+            ];
+
+            $db->insertObject('#__translations_queue_states', $stateRow, 'id');
+
+            return (int) $stateRow->id;
+        }
+
+        $stateId = $work['stateId'];
+        $query   = $db->getQuery(true)
+            ->update($db->quoteName('#__translations_queue_states'))
+            ->set($db->quoteName('attempts') . ' = ' . $db->quoteName('attempts') . ' + 1')
+            ->set($db->quoteName('last_error') . ' = :lastError')
+            ->where($db->quoteName('id') . ' = :stateId')
+            ->bind(':lastError', $lastError, ParameterType::STRING)
+            ->bind(':stateId', $stateId, ParameterType::INTEGER);
+        $db->setQuery($query)->execute();
+
+        return $stateId;
+    }
+
+    /**
+     * Record a failed attempt: keep the error on the item and set it aside when its attempts are
+     * used up, so no later run pays for it again.
+     *
+     * @param   integer    $stateId  The id of the item's state row.
+     * @param   string     $message  The error the attempt ended with.
+     * @param   RunResult  $result   The run's result, updated in place.
+     *
+     * @return  void
+     *
+     * @since   1.3.0
+     */
+    private function recordFailure(int $stateId, string $message, RunResult $result): void
+    {
+        $db        = $this->getDatabase();
+        $lastError = RunResult::errorText($message);
+        $query     = $db->getQuery(true)
+            ->update($db->quoteName('#__translations_queue_states'))
+            ->set($db->quoteName('last_error') . ' = :lastError')
+            ->where($db->quoteName('id') . ' = :stateId')
+            ->bind(':lastError', $lastError, ParameterType::STRING)
+            ->bind(':stateId', $stateId, ParameterType::INTEGER);
+        $db->setQuery($query)->execute();
+
+        $failed      = 'failed';
+        $maxAttempts = RunResult::MAX_ATTEMPTS;
+        $query       = $db->getQuery(true)
+            ->update($db->quoteName('#__translations_queue_states'))
+            ->set($db->quoteName('translation_state') . ' = :failed')
+            ->where($db->quoteName('id') . ' = :stateId')
+            ->where($db->quoteName('attempts') . ' >= :maxAttempts')
+            ->bind(':failed', $failed, ParameterType::STRING)
+            ->bind(':stateId', $stateId, ParameterType::INTEGER)
+            ->bind(':maxAttempts', $maxAttempts, ParameterType::INTEGER);
+        $db->setQuery($query)->execute();
+
+        $result->failed++;
+        $result->quarantined += $db->getAffectedRows();
+        $result->lastError    = $lastError;
+    }
+
+    /**
+     * Set aside the translations whose last attempt never came back.
+     *
+     * A run killed while it waits on the provider records nothing after its request, so an item on
+     * its last attempt would stay pending with no attempts left: never picked up again, and never
+     * shown as failed. Such an item is counted as failed by the run that finds it.
+     *
+     * @param   RunResult  $result  The run's result, updated in place.
+     *
+     * @return  void
+     *
+     * @since   1.3.0
+     */
+    private function setAsideUnanswered(RunResult $result): void
+    {
+        $failed      = 'failed';
+        $pending     = 'pending';
+        $maxAttempts = RunResult::MAX_ATTEMPTS;
+        $db          = $this->getDatabase();
+        $query       = $db->getQuery(true)
+            ->update($db->quoteName('#__translations_queue_states'))
+            ->set($db->quoteName('translation_state') . ' = :failed')
+            ->where($db->quoteName('translation_state') . ' = :pending')
+            ->where($db->quoteName('attempts') . ' >= :maxAttempts')
+            ->bind(':failed', $failed, ParameterType::STRING)
+            ->bind(':pending', $pending, ParameterType::STRING)
+            ->bind(':maxAttempts', $maxAttempts, ParameterType::INTEGER);
+        $db->setQuery($query)->execute();
+
+        $setAside = $db->getAffectedRows();
+
+        if ($setAside > 0) {
+            $result->failed      += $setAside;
+            $result->quarantined += $setAside;
+            $result->lastError    = self::NO_ANSWER;
+        }
     }
 
     /**
@@ -174,7 +402,7 @@ class TranslationModel extends BaseDatabaseModel
      *
      * @param   integer  $batchSize  The most items to collect.
      *
-     * @return  array<int, array{contentType: string, sourceItemId: int, targetLanguage: string}>
+     * @return  array<int, array{contentType: string, sourceItemId: int, targetLanguage: string, stateId: int|null}>
      *
      * @since   0.11.0
      */
@@ -199,19 +427,46 @@ class TranslationModel extends BaseDatabaseModel
                     return $work;
                 }
 
-                $sourceItemIds = $this->untranslatedItems($contentType, $properties, $sourceLanguage, $targetLanguage, $remaining);
+                $untranslated = $this->untranslatedItems($contentType, $properties, $sourceLanguage, $targetLanguage, $remaining);
 
-                foreach ($sourceItemIds as $sourceItemId) {
+                foreach ($untranslated as $item) {
                     $work[] = [
                         'contentType'    => $contentType,
-                        'sourceItemId'   => (int) $sourceItemId,
+                        'sourceItemId'   => (int) $item->id,
                         'targetLanguage' => $targetLanguage,
+                        'stateId'        => $item->stateId === null ? null : (int) $item->stateId,
                     ];
                 }
             }
         }
 
         return $work;
+    }
+
+    /**
+     * Count the items still waiting on a translation, with attempts left.
+     *
+     * @return  integer  The number of source item and target language pairs a run would translate.
+     *
+     * @since   1.3.0
+     */
+    private function countPendingWork(): int
+    {
+        $sourceLanguage = (string) ComponentHelper::getParams('com_translations')->get('source_language', 'en-GB');
+        $db             = $this->getDatabase();
+        $count          = 0;
+
+        foreach ($this->targetLanguages($sourceLanguage) as $targetLanguage) {
+            foreach (ContentTypesHelper::getContentTypes() as $contentType) {
+                $query = $this->untranslatedQuery($contentType, ContentTypesHelper::getProperties($contentType), $sourceLanguage, $targetLanguage)
+                    ->select('COUNT(*)');
+                $db->setQuery($query);
+
+                $count += (int) $db->loadResult();
+            }
+        }
+
+        return $count;
     }
 
     /**
@@ -242,25 +497,57 @@ class TranslationModel extends BaseDatabaseModel
     /**
      * Source items of one content type with no usable translation in a language.
      *
+     * An item that failed before comes after the untried ones, so an item that keeps failing, such
+     * as an article too long to translate within the server's time limit, never holds up the rest.
+     *
      * @param   string   $contentType     The content type key, e.g. 'com_content.article'.
      * @param   array    $properties      The content type's properties from the map.
      * @param   string   $sourceLanguage  The configured source language code.
      * @param   string   $targetLanguage  The target language code.
      * @param   integer  $limit           The most rows to return.
      *
-     * @return  int[]  The source item ids.
+     * @return  object[]  The source item id and the id of its state row, null when it has none.
      *
      * @since   0.11.0
      */
     private function untranslatedItems(string $contentType, array $properties, string $sourceLanguage, string $targetLanguage, int $limit): array
     {
-        $table      = (string) ($properties['table'] ?? '');
-        $stateField = (string) ($properties['stateField'] ?? '');
-        $pending    = 'pending';
+        $db    = $this->getDatabase();
+        $query = $this->untranslatedQuery($contentType, $properties, $sourceLanguage, $targetLanguage)
+            ->select($db->quoteName(['item.id', 'queueState.id'], ['id', 'stateId']))
+            ->order(
+                [
+                    'COALESCE(' . $db->quoteName('queueState.attempts') . ', 0) ASC',
+                    $db->quoteName('item.id') . ' ASC',
+                ]
+            );
+        $db->setQuery($query, 0, $limit);
+
+        return $db->loadObjectList();
+    }
+
+    /**
+     * The query for the source items of one content type with no usable translation in a language,
+     * without its select list, so it serves both to choose the work and to count it.
+     *
+     * @param   string  $contentType     The content type key, e.g. 'com_content.article'.
+     * @param   array   $properties      The content type's properties from the map.
+     * @param   string  $sourceLanguage  The configured source language code.
+     * @param   string  $targetLanguage  The target language code.
+     *
+     * @return  QueryInterface
+     *
+     * @since   1.3.0
+     */
+    private function untranslatedQuery(string $contentType, array $properties, string $sourceLanguage, string $targetLanguage): QueryInterface
+    {
+        $table       = (string) ($properties['table'] ?? '');
+        $stateField  = (string) ($properties['stateField'] ?? '');
+        $pending     = 'pending';
+        $maxAttempts = RunResult::MAX_ATTEMPTS;
 
         $db    = $this->getDatabase();
         $query = $db->getQuery(true)
-            ->select($db->quoteName('item.id'))
             ->from($db->quoteName($table, 'item'))
             // LEFT joins keep items that have no rows of ours at all, which is what an item nothing
             // has translated yet looks like.
@@ -282,14 +569,16 @@ class TranslationModel extends BaseDatabaseModel
                 '(' . $db->quoteName('queue.do_not_translate') . ' IS NULL OR '
                 . $db->quoteName('queue.do_not_translate') . ' = 0)'
             )
-            // No state row means never translated; pending means the source has moved on since.
+            // No state row means never translated; pending means the source has moved on since, or
+            // an earlier attempt failed, and is waited on only while attempts are left.
             ->where(
-                '(' . $db->quoteName('queueState.id') . ' IS NULL OR '
-                . $db->quoteName('queueState.translation_state') . ' = :pending)'
+                '(' . $db->quoteName('queueState.id') . ' IS NULL OR ('
+                . $db->quoteName('queueState.translation_state') . ' = :pending AND '
+                . $db->quoteName('queueState.attempts') . ' < :maxAttempts))'
             )
             ->bind(':sourceLanguage', $sourceLanguage, ParameterType::STRING)
             ->bind(':pending', $pending, ParameterType::STRING)
-            ->order($db->quoteName('item.id') . ' ASC');
+            ->bind(':maxAttempts', $maxAttempts, ParameterType::INTEGER);
 
         // The same narrowing the queue applies, so the batch never picks an item translate() refuses.
         if (isset($properties['limitToExtension'])) {
@@ -306,9 +595,7 @@ class TranslationModel extends BaseDatabaseModel
                 ->bind(':clientId', $clientId, ParameterType::INTEGER);
         }
 
-        $db->setQuery($query, 0, $limit);
-
-        return $db->loadColumn();
+        return $query;
     }
 
     /**
@@ -1088,7 +1375,8 @@ class TranslationModel extends BaseDatabaseModel
      *
      * One state row exists per (queue row, target language); no row means "no
      * translation yet". The first translation inserts the row, a repeat run
-     * updates it. The row's modified time is maintained by the database.
+     * updates it and clears the attempts and the error any failed run left on it.
+     * The row's modified time is maintained by the database.
      *
      * @param   integer  $sourceItemId    The source item id.
      * @param   string   $targetLanguage  The target language code.
@@ -1125,17 +1413,21 @@ class TranslationModel extends BaseDatabaseModel
         $stateId = $db->loadResult();
 
         if ($stateId !== null) {
-            $stateId = (int) $stateId;
+            $stateId   = (int) $stateId;
+            $lastError = '';
 
             $query = $db->getQuery(true)
                 ->update($db->quoteName('#__translations_queue_states'))
                 ->set($db->quoteName('translation_state') . ' = :state')
                 ->set($db->quoteName('source_version_id') . ' = :versionId')
                 ->set($db->quoteName('machine_draft') . ' = :machineDraft')
+                ->set($db->quoteName('attempts') . ' = 0')
+                ->set($db->quoteName('last_error') . ' = :lastError')
                 ->where($db->quoteName('id') . ' = :stateId')
                 ->bind(':state', $reviewState, ParameterType::STRING)
                 ->bind(':versionId', $versionId, ParameterType::INTEGER)
                 ->bind(':machineDraft', $machineDraftJson, ParameterType::STRING)
+                ->bind(':lastError', $lastError, ParameterType::STRING)
                 ->bind(':stateId', $stateId, ParameterType::INTEGER);
             $db->setQuery($query);
             $db->execute();

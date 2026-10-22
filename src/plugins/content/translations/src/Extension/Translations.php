@@ -877,7 +877,9 @@ final class Translations extends CMSPlugin implements SubscriberInterface, Datab
     /**
      * Mark a source item's translations as needing re-translation.
      *
-     * For a versioned type only translations made from an older version go back to pending. The
+     * Each one starts again with a fresh set of attempts, because the item an earlier attempt failed
+     * on has changed. For a versioned type only translations made from an older version go back to
+     * pending. The
      * version is compared as newer rather than different, because a version row is also stored
      * without a new version being added: for a version note, and for the keep forever toggle, which
      * carries the toggled row's id.
@@ -893,17 +895,22 @@ final class Translations extends CMSPlugin implements SubscriberInterface, Datab
     private function invalidateTranslations(int $queueId, ?int $versionId = null): void
     {
         $pendingState = 'pending';
+        $lastError    = '';
 
-        // A published translation is updated in place, so it stays on the site.
-        $staleStates = ['review', 'approved', 'published'];
+        // A published translation is updated in place, so it stays on the site. A pending one keeps
+        // its state and gets its attempts back, as a failed one does.
+        $staleStates = ['pending', 'review', 'approved', 'published', 'failed'];
 
         $db    = $this->getDatabase();
         $query = $db->getQuery(true)
             ->update($db->quoteName('#__translations_queue_states'))
             ->set($db->quoteName('translation_state') . ' = :pending')
+            ->set($db->quoteName('attempts') . ' = 0')
+            ->set($db->quoteName('last_error') . ' = :lastError')
             ->where($db->quoteName('queue_id') . ' = :queueId')
             ->whereIn($db->quoteName('translation_state'), $staleStates, ParameterType::STRING)
             ->bind(':pending', $pendingState, ParameterType::STRING)
+            ->bind(':lastError', $lastError, ParameterType::STRING)
             ->bind(':queueId', $queueId, ParameterType::INTEGER);
 
         // A type with no version history has nothing to compare, so every stale cell goes back.
