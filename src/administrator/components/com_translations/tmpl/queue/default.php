@@ -25,10 +25,10 @@ $contentType = (string) $this->state->get('filter.contenttype');
 
 // Icon, colour and title per translation state; the cell shows the icon alone, so the title carries
 // the state as a tooltip and to a screen reader. No state is told apart by its colour alone.
-// Review is the one state waiting on a person, so it takes the only warm colour in the grid.
+// Review and failed are the states waiting on a person, so they take the only warm colours in the grid.
 // Atum's dark theme mutes info to a translucent white, so it is not used here.
-// The two states the editor leads to name the action that reached them, which the short labels the
-// status filter shares do not.
+// The two states the editor leads to name the action that reached them, and failed says it was set
+// aside, which the short labels the status filter shares do not.
 // The colour is carried on the icon rather than a filled badge, so a cell sits on the row's own
 // background, as core's tbody-icon does.
 $stateIcons = [
@@ -38,6 +38,7 @@ $stateIcons = [
     'review'      => ['icon' => 'icon-pencil', 'class' => 'text-warning', 'title' => 'COM_TRANSLATIONS_STATUS_REVIEW'],
     'approved'    => ['icon' => 'icon-check', 'class' => 'text-primary', 'title' => 'COM_TRANSLATIONS_STATUS_APPROVED_DESC'],
     'published'   => ['icon' => 'icon-check-circle', 'class' => 'text-success', 'title' => 'COM_TRANSLATIONS_STATUS_PUBLISHED_DESC'],
+    'failed'      => ['icon' => 'icon-exclamation-triangle', 'class' => 'text-danger', 'title' => 'COM_TRANSLATIONS_STATUS_FAILED_DESC'],
 ];
 ?>
 
@@ -107,8 +108,8 @@ $stateIcons = [
                             <?php $status = $item->states[$langCode] ?? ''; ?>
                             <?php // Only review/approved cells open the translation feedback view (shown as a link)?>
                             <?php $editable    = \in_array($status, ['review', 'approved'], true); ?>
-                            <?php // An absent state means no translation yet, pending means the source has moved on since; the same trigger serves both. ?>
-                            <?php $translatable = $status === '' || $status === 'pending'; ?>
+                            <?php // An absent state means no translation yet, pending that one is waiting for a run, and failed that the runs gave up on it; the same trigger serves all three. ?>
+                            <?php $translatable = \in_array($status, ['', 'pending', 'failed'], true); ?>
                             <?php // The state column is free text, so a value the map does not hold falls back rather than warning. ?>
                             <?php $stateIcon   = $stateIcons[$status] ?? $stateIcons['']; ?>
                             <?php $stateTitle = Text::_($stateIcon['title']); ?>

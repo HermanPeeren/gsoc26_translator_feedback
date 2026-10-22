@@ -20,15 +20,17 @@ use Joomla\CMS\Plugin\CMSPlugin;
 use Joomla\Component\Scheduler\Administrator\Event\ExecuteTaskEvent;
 use Joomla\Component\Scheduler\Administrator\Task\Status;
 use Joomla\Component\Scheduler\Administrator\Traits\TaskPluginTrait;
+use Joomla\Component\Translations\Administrator\Helper\RunResult;
+use Joomla\Component\Translations\Administrator\Helper\TimeBudget;
 use Joomla\Component\Translations\Administrator\Model\TranslationModel;
 use Joomla\Event\SubscriberInterface;
 
 /**
  * Task plugin that works through the translation queue on a schedule.
  *
- * A thin trigger: it boots the Translations component and translates one batch of the
- * items waiting on a translation per execution, resuming until the queue is drained.
- * The translating itself lives in the component.
+ * A thin trigger: it boots the Translations component and translates a batch of the items
+ * waiting on a translation per execution, for as long as the run's time budget allows,
+ * resuming until the queue is drained. The translating itself lives in the component.
  *
  * @since  0.11.0
  */
@@ -47,6 +49,10 @@ final class TranslationsTranslate extends CMSPlugin implements SubscriberInterfa
             'langConstPrefix' => 'PLG_TASK_TRANSLATIONSTRANSLATE',
             'form'            => 'translate',
             'method'          => 'translate',
+        ],
+        'translationstranslate.resetfailed' => [
+            'langConstPrefix' => 'PLG_TASK_TRANSLATIONSTRANSLATE_RESETFAILED',
+            'method'          => 'resetFailed',
         ],
     ];
 
@@ -75,7 +81,7 @@ final class TranslationsTranslate extends CMSPlugin implements SubscriberInterfa
     }
 
     /**
-     * Translate one batch of the items waiting on a translation.
+     * Translate a batch of the items waiting on a translation, until the run's time budget is used up.
      *
      * @param   ExecuteTaskEvent  $event  The onExecuteTask event.
      *
@@ -87,35 +93,118 @@ final class TranslationsTranslate extends CMSPlugin implements SubscriberInterfa
     {
         $params      = $event->getArgument('params');
         $batchSize   = max(1, (int) ($params->batch ?? 5));
+        $budget      = new TimeBudget((int) ($params->time_budget ?? 0));
         $application = $this->getApplication();
         $language    = $application->getLanguage();
 
-        /** @var ComponentInterface&MVCFactoryServiceInterface $component */
-        $component = $application->bootComponent('com_translations');
-
-        /** @var TranslationModel $model */
-        $model = $component->getMVCFactory()->createModel('Translation', 'Administrator', ['ignore_request' => true]);
-
         try {
-            $translated = $model->translateBatch($batchSize, $application);
+            $result = $this->translationModel()->translateBatch($batchSize, $application, $budget);
         } catch (\Throwable $e) {
-            $message = $e->getMessage();
-            $this->logTask($message, 'error');
-            $this->snapshot['output']      = $message;
-            $this->snapshot['output_body'] = $message;
-
-            return Status::KNOCKOUT;
+            return $this->knockout($e->getMessage());
         }
 
-        if ($translated === 0) {
+        if ($result->busy) {
+            $this->logTask($language->_('PLG_TASK_TRANSLATIONSTRANSLATE_LOG_BUSY'));
+
+            return Status::OK;
+        }
+
+        if ($result->processed === 0 && $result->failed === 0) {
             $this->logTask($language->_('PLG_TASK_TRANSLATIONSTRANSLATE_LOG_NONE'));
 
             return Status::OK;
         }
 
-        $this->logTask(\sprintf($language->_('PLG_TASK_TRANSLATIONSTRANSLATE_LOG_TRANSLATED'), $translated));
+        if ($result->processed > 0) {
+            $this->logTask(
+                \sprintf(
+                    $language->_('PLG_TASK_TRANSLATIONSTRANSLATE_LOG_TRANSLATED'),
+                    $result->processed,
+                    $result->remaining
+                )
+            );
+        }
 
-        // A full batch usually means more is waiting; resume until a run comes up short.
-        return $translated === $batchSize ? Status::WILL_RESUME : Status::OK;
+        if ($result->failed > 0) {
+            $this->logTask(
+                \sprintf(
+                    $language->_('PLG_TASK_TRANSLATIONSTRANSLATE_LOG_FAILED'),
+                    $result->failed,
+                    $result->quarantined,
+                    $result->lastError
+                ),
+                'warning'
+            );
+        }
+
+        // Resume only after progress: an item that fails every time must not be retried run after run.
+        switch ($result->outcome()) {
+            case RunResult::RESUME:
+                return Status::WILL_RESUME;
+
+            case RunResult::ERROR:
+                return $this->knockout($result->lastError);
+
+            default:
+                return Status::OK;
+        }
+    }
+
+    /**
+     * Give the translations that were set aside as failed a new set of attempts.
+     *
+     * @param   ExecuteTaskEvent  $event  The onExecuteTask event.
+     *
+     * @return  integer  The task exit status.
+     *
+     * @since   1.3.0
+     */
+    protected function resetFailed(ExecuteTaskEvent $event): int
+    {
+        try {
+            $reset = $this->translationModel()->resetFailed();
+        } catch (\Throwable $e) {
+            return $this->knockout($e->getMessage());
+        }
+
+        $this->logTask(\sprintf($this->getApplication()->getLanguage()->_('PLG_TASK_TRANSLATIONSTRANSLATE_RESETFAILED_LOG'), $reset));
+
+        return Status::OK;
+    }
+
+    /**
+     * Boot the Translations component and create its translation model.
+     *
+     * @return  TranslationModel
+     *
+     * @since   1.3.0
+     */
+    private function translationModel(): TranslationModel
+    {
+        /** @var ComponentInterface&MVCFactoryServiceInterface $component */
+        $component = $this->getApplication()->bootComponent('com_translations');
+
+        /** @var TranslationModel $model */
+        $model = $component->getMVCFactory()->createModel('Translation', 'Administrator', ['ignore_request' => true]);
+
+        return $model;
+    }
+
+    /**
+     * Log an error as the outcome of the run.
+     *
+     * @param   string  $message  The error message.
+     *
+     * @return  integer  The KNOCKOUT exit status.
+     *
+     * @since   1.3.0
+     */
+    private function knockout(string $message): int
+    {
+        $this->logTask($message, 'error');
+        $this->snapshot['output']      = $message;
+        $this->snapshot['output_body'] = $message;
+
+        return Status::KNOCKOUT;
     }
 }

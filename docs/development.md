@@ -103,11 +103,12 @@ composer analyse
 | `ContentTypesHelperTest` | The shipped `contenttypes.json`: that every relation resolves, and that a type is translated after the types its items point at. |
 | `TranslationProviderTest`, `RagProviderTest` | What the Claude plugins ask the API for and, more to the point, which replies they refuse. |
 | `LanguagePackSeedTest` | Which of a language pack's strings are worth paying a provider to translate, how they are batched, and that a text repeated across files is translated once. |
-| `RunResultTest` | Whether a seed or distil run asks to run again, and how much smaller a retry is. A run that resumes without progress is how one failing batch was retried, and paid for, for days. |
+| `RunResultTest` | Whether a seed, distil or translate run asks to run again, and how much smaller a retry is. A run that resumes without progress is how one failing batch was retried, and paid for, for days. |
 | `TimeBudgetTest` | When a run stops sending requests, so it neither overruns the web server or the scheduler's lock nor stops too early. |
 | `RunLockTest` | The name of the database lock that keeps two runs of one job apart: the same for every run of a job, different per job and per site, and within MySQL's 64 characters. Two runs at once would send, and pay for, the same requests. |
 | `DistillerRequestTest` | What goes into one distil request (one language, one attempt level, a size and token budget), how long texts are cut to the changed blocks, and which rules count as the same rule. |
 | `PackageManifestTest` | That the release is complete: every extension in the tree is in a manifest, and every manifest carries a version a tag can match. |
+| `SchemaUpdateTest` | That an updated site and a new one get the same tables: every column an update file adds is in the install file too, and every addition ends in its CAN FAIL marker directly before the semicolon, which is the only place Joomla recognises it. |
 | `UpdateServerTest` | That a site asking for updates is told the version that was released, and pointed at the archive the build actually produces. |
 
 What is **not** tested is Joomla: no test asserts that a list model filters, that a table

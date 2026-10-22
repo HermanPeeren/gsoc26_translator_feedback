@@ -109,15 +109,19 @@ of that item's translation into that language as an icon, and hovering it names 
 
 - **no translation yet**, a grey circle,
 - **pending**, waiting to be translated, which is where a translation goes when its source
-  has been edited since it was made,
+  has been edited since it was made, and where an item waits for its next attempt when one
+  failed,
 - **review**, a draft is waiting for a translator,
 - **approved**, a translator has finished with it,
-- **published**, the translation was approved and published from here.
+- **published**, the translation was approved and published from here,
+- **failed**, a warning sign: the translate task tried three times and set the item aside (see
+  "Doing it on a schedule").
 
 Each state has its own icon, so none of them has to be told apart by colour alone. The colours
 group them instead: grey for nothing yet, blue for pending and approved, green for published,
-and amber for review, the one state that is waiting on a translator. Where a cell can be
-clicked its tooltip also says what clicking does.
+amber for review, the state that is waiting on a translator, and red for failed, which is
+waiting on whoever looks after the site. Where a cell can be clicked its tooltip also says
+what clicking does.
 
 With many languages the grid scrolls sideways on its own, keeping the source column beside its
 row, so the page itself never grows wider than the screen.
@@ -125,7 +129,7 @@ row, so the page itself never grows wider than the screen.
 Use the tab above the grid to move between content types. There is one tab per type the
 component translates: articles, categories, tags and site menu items.
 
-From a cell with no translation, or one that is pending, you can trigger a translation. It
+From a cell with no translation, or one that is pending or failed, you can trigger a translation. It
 creates a draft in that language and sets the cell to "review". The cell spins while the
 translation runs, and a second click on it is ignored. Clicking a cell in review or
 approved opens the side-by-side editor. Items marked "no need for translation" are hidden by
@@ -291,6 +295,13 @@ Both are optional. Everything they do can also be done by hand: translate from a
 and distil with the **Distil Now** button in the Rules view. How many items each run handles
 is a setting on the task, so you can keep a run short on a busy site.
 
+The translate task has two settings:
+
+- **Batch Size** (5 by default): the most items one run translates. Each item is one request
+  to the provider.
+- **Time per Run (seconds)**: as for the distil task below. A run stops before an item that
+  would probably not finish in time, but the first item of a run is always sent.
+
 The distil task has two settings:
 
 - **Corrections per Request** (50 by default): how many feedback rows go to the provider in
@@ -312,6 +323,22 @@ after two failed requests in a row, because the provider is then most likely unr
 run only asks to be repeated straight away when it got something done; a run that only failed
 waits for the task's next scheduled time. The results of each request are saved as soon as it
 is answered, so a run that stops part-way keeps everything it finished.
+
+The translate task counts its attempts the same way, per item. An item whose translation
+fails is tried again in a later run, after the items not tried yet, so it never holds up the
+rest; after its third failed attempt its cell shows **failed**, the last error is kept with it,
+and no run sends it again. This matters most for an article whose translation takes longer
+than the hosting allows a web request: the run is cut off while it waits, nothing but the
+attempt is recorded, and without the count the same article would be sent, and paid for, on
+every run. **Time per Run** cannot prevent that, since the first item of a run is always sent.
+Translate such an item by hand from its cell once the cause is dealt with, or give it new
+attempts with **Retry Failed Translations** (see "Maintenance tasks"). Editing the source item
+also gives its translations a fresh set of attempts.
+
+A provider that cannot be reached, or an empty credit balance, uses up attempts as well. A run
+stops after two failures in a row, so each run spends an attempt on at most two items, but a
+schedule that keeps running through a long outage sets item after item aside. Run **Retry
+Failed Translations** once the provider answers again.
 
 ### Running the scheduler
 
@@ -378,18 +405,22 @@ For this component:
 
 From the command line Joomla can start a task while the same task is still running in an
 earlier process: `scheduler:run` does not check a task's lock. The seed and distil tasks
-guard against that themselves (since version 1.2.1): a run that finds another run of the same
-job busy - the distiller, or the seed task for the same language - does nothing and logs that
-another run is still busy, so nothing is sent or paid for twice.
+guard against that themselves (since version 1.2.1), and so does the translate task (since
+version 1.3.0): a run that finds another run of the same job busy - the distiller, the
+translate task, or the seed task for the same language - does nothing and logs that another
+run is still busy, so nothing is sent or paid for twice.
 
 The **Lazy Scheduler**, which runs tasks when someone visits the site, is fine for small
 amounts of work but too slow for a whole language pack.
 
 ### Maintenance tasks
 
-Four more task types fix things after the fact. Create them as tasks without a schedule and
+Five more task types fix things after the fact. Create them as tasks without a schedule and
 start them with **Run Test** in the list of Scheduled Tasks:
 
+- **Retry Failed Translations** gives the translations set aside as `failed` a new set of
+  attempts. Run it once the cause is fixed, such as an invalid model, an empty credit balance
+  or a time limit raised by the hosting.
 - **Retry Failed Translator Feedback** gives the feedback rows set aside as `failed` a new set
   of attempts. Run it once the cause is fixed, such as an invalid model or an empty credit
   balance.
