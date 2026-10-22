@@ -879,10 +879,9 @@ final class Translations extends CMSPlugin implements SubscriberInterface, Datab
      *
      * Each one starts again with a fresh set of attempts, because the item an earlier attempt failed
      * on has changed. For a versioned type only translations made from an older version go back to
-     * pending. The
-     * version is compared as newer rather than different, because a version row is also stored
-     * without a new version being added: for a version note, and for the keep forever toggle, which
-     * carries the toggled row's id.
+     * pending. The version is compared as newer rather than different, because a version row is
+     * also stored without a new version being added: for a version note, and for the keep forever
+     * toggle, which carries the toggled row's id.
      *
      * @param   integer       $queueId    The source item's queue row id.
      * @param   integer|null  $versionId  The version just stored for the source, or null when the
@@ -897,8 +896,8 @@ final class Translations extends CMSPlugin implements SubscriberInterface, Datab
         $pendingState = 'pending';
         $lastError    = '';
 
-        // A published translation is updated in place, so it stays on the site. A pending one keeps
-        // its state and gets its attempts back, as a failed one does.
+        // A published translation is updated in place, so it stays on the site. Pending and failed
+        // ones get a fresh set of attempts.
         $staleStates = ['pending', 'review', 'approved', 'published', 'failed'];
 
         $db    = $this->getDatabase();

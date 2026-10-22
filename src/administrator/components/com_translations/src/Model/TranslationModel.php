@@ -63,7 +63,7 @@ class TranslationModel extends BaseDatabaseModel
      * @var    string
      * @since  1.3.0
      */
-    private const NO_ANSWER = 'No answer came back from the provider: the run stopped while it waited, most likely at a time limit of the server.';
+    private const NO_ANSWER = 'No answer came back from the provider: the run stopped while it waited, most likely at the server\'s time limit.';
 
     /**
      * Translate a source item into one target language.
@@ -530,7 +530,7 @@ class TranslationModel extends BaseDatabaseModel
      * The query for the source items of one content type with no usable translation in a language,
      * without its select list, so it serves both to choose the work and to count it.
      *
-     * @param   string  $contentType     The content type key, e.g. 'com_content.article'.
+     * @param   string  $contentType     The content type key.
      * @param   array   $properties      The content type's properties from the map.
      * @param   string  $sourceLanguage  The configured source language code.
      * @param   string  $targetLanguage  The target language code.
