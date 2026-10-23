@@ -12,6 +12,7 @@
         <downloads>
             <downloadurl type="full" format="zip">https://github.com/joomla-projects/gsoc26_translator_feedback/releases/download/v1.3.0/pkg_translations-1.3.0.zip</downloadurl>
         </downloads>
+        <sha512>56ea6ee7306234d13d2466db4a05ea96a9d9356cbf5fe764134eaabb07605340be01f1437ef921593636a1d6abfcb2ef84372e0517f9266dd953ebf032d3106d</sha512>
         <tags>
             <tag>stable</tag>
         </tags>
