@@ -85,6 +85,18 @@ final class RunResult
     public $quarantined = 0;
 
     /**
+     * The parts of items that were translated and stored in this run without finishing their item.
+     *
+     * An item too long to translate in one request is translated in several, over as many runs as
+     * it takes. A run that stored some of them got something done and paid for, even though it
+     * finished no item, so it counts as progress and the run asks to be resumed.
+     *
+     * @var    integer
+     * @since  1.4.0
+     */
+    public $advanced = 0;
+
+    /**
      * The items still waiting to be processed after this run.
      *
      * @var    integer
@@ -125,11 +137,13 @@ final class RunResult
      */
     public function outcome(): string
     {
-        if ($this->aborted || ($this->processed === 0 && $this->failed > 0)) {
+        $progress = $this->processed + $this->advanced;
+
+        if ($this->aborted || ($progress === 0 && $this->failed > 0)) {
             return self::ERROR;
         }
 
-        if ($this->processed > 0 && $this->remaining > 0) {
+        if ($progress > 0 && $this->remaining > 0) {
             return self::RESUME;
         }
 

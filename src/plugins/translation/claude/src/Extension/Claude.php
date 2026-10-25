@@ -79,6 +79,35 @@ final class Claude extends CMSPlugin implements SubscriberInterface
     private const EFFORTS = ['low', 'medium', 'high'];
 
     /**
+     * What a request carrying one part of a longer document is told about that part.
+     *
+     * An item too long for one request is cut between tags, so a part can begin or end inside a
+     * list, a table or a section. Closing what it finds open, or adding what it thinks is
+     * missing, would put stray tags in the middle of the article once the parts are joined
+     * back together.
+     *
+     * @var    string
+     * @since  1.4.0
+     */
+    private const FRAGMENT_PROMPT = 'Each text is one part of a longer document and may begin or end in the'
+        . ' middle of a sentence, a list or a section. Translate it as the fragment it is: do not open, close'
+        . ' or add any HTML tag that is not already there, do not complete an unfinished sentence, and do not'
+        . ' add anything to introduce or round off the part. Keep the terminology and the register of the rest'
+        . ' of the document. The JSON object you return holds one further key besides the numbers, "glossary",'
+        . ' listing the terms you chose for this part that the rest of the document should be translated with:'
+        . ' the domain-specific and recurring terms only, each as a "source" and a "target", and no ordinary'
+        . ' words.';
+
+    /**
+     * The key the terms chosen for a part of a document come back under, kept apart from the
+     * numbered translations.
+     *
+     * @var    string
+     * @since  1.4.0
+     */
+    private const GLOSSARY_KEY = 'glossary';
+
+    /**
      * The HTTP client used to call the API.
      *
      * @var    Http
@@ -137,15 +166,22 @@ final class Claude extends CMSPlugin implements SubscriberInterface
             throw new \RuntimeException('No Claude API key is configured for the translation plugin.');
         }
 
-        $translated = $this->requestTranslation(
+        $answer = $this->requestTranslation(
             $event->getSourceStrings(),
             $event->getSourceLanguage(),
             $event->getTargetLanguage(),
             $event->getRules(),
+            $event->getDocumentContext(),
+            $event->getTerminology(),
             $apiKey
         );
 
-        $event->addResult($translated);
+        $event->addResult($answer['strings']);
+
+        // Only asked for, and only of use, when this request was one part of a longer document.
+        if ($answer['glossary'] !== []) {
+            $event->reportGlossary($answer['glossary']);
+        }
 
         // One provider answers per item; stop the rest of the group running.
         $event->stopPropagation();
@@ -159,13 +195,18 @@ final class Claude extends CMSPlugin implements SubscriberInterface
      * context, and the reply maps each number to the translation: a long key such as a
      * language constant is then not repeated in the reply, which is the part paid for most.
      *
-     * @param   array   $strings         The source strings keyed by field.
-     * @param   string  $sourceLanguage  The source language code.
-     * @param   string  $targetLanguage  The target language code.
-     * @param   array   $rules           The distilled rules to steer the translation, grouped by rule type.
-     * @param   string  $apiKey          The Anthropic API key.
+     * A request that carries only part of a document also asks for the terms the model chose, so
+     * the request for the next part can be told to keep using them.
      *
-     * @return  array  The translated strings keyed by field.
+     * @param   array                  $strings          The source strings keyed by field.
+     * @param   string                 $sourceLanguage   The source language code.
+     * @param   string                 $targetLanguage   The target language code.
+     * @param   array                  $rules            The distilled rules to steer the translation, grouped by rule type.
+     * @param   string                 $documentContext  What the document is about, empty when the strings are all of it.
+     * @param   array<string, string>  $terminology      The terms earlier parts of the document were translated with.
+     * @param   string                 $apiKey           The Anthropic API key.
+     *
+     * @return  array{strings: array, glossary: array<string, string>}  The translated strings, and the terms chosen.
      *
      * @throws  \RuntimeException  When the API cannot be reached or returns an error.
      *
@@ -176,14 +217,17 @@ final class Claude extends CMSPlugin implements SubscriberInterface
         string $sourceLanguage,
         string $targetLanguage,
         array $rules,
+        string $documentContext,
+        array $terminology,
         string $apiKey
     ): array {
-        $model   = (string) $this->params->get('model', 'claude-sonnet-5');
-        $numbers = array_map('strval', range(1, \count($strings)));
-        $payload = [
+        $model      = (string) $this->params->get('model', 'claude-sonnet-5');
+        $numbers    = array_map('strval', range(1, \count($strings)));
+        $inDocument = $documentContext !== '';
+        $payload    = [
             'model'         => $model,
             'max_tokens'    => self::MAX_TOKENS,
-            'system'        => $this->systemPrompt($sourceLanguage, $targetLanguage, $rules),
+            'system'        => $this->systemPrompt($sourceLanguage, $targetLanguage, $rules, $documentContext, $terminology),
             'messages'      => [
                 [
                     'role'    => 'user',
@@ -193,16 +237,18 @@ final class Claude extends CMSPlugin implements SubscriberInterface
             // Constrain the reply to a JSON object with exactly these numbers as keys, so a long
             // HTML value can never come back as prose or malformed JSON the decoder would reject.
             'output_config' => self::outputConfigFor(
-                $this->responseFormat($numbers),
+                self::responseFormat($numbers, $inDocument),
                 $model,
                 (string) $this->params->get('effort', 'low')
             ),
         ];
 
-        return $this->keyedTranslation(
-            $this->parseTranslation($this->callApi($payload, $apiKey), $numbers),
-            array_keys($strings)
-        );
+        $answer = $this->parseTranslation($this->callApi($payload, $apiKey), $numbers);
+
+        return [
+            'strings'  => $this->keyedTranslation($answer['strings'], array_keys($strings)),
+            'glossary' => $answer['glossary'],
+        ];
     }
 
     /**
@@ -336,16 +382,23 @@ final class Claude extends CMSPlugin implements SubscriberInterface
     /**
      * Build the system prompt that tells the model how to translate.
      *
-     * @param   string  $sourceLanguage  The source language code.
-     * @param   string  $targetLanguage  The target language code.
-     * @param   array   $rules           The distilled rules to steer the translation, grouped by rule type.
+     * @param   string                 $sourceLanguage   The source language code.
+     * @param   string                 $targetLanguage   The target language code.
+     * @param   array                  $rules            The distilled rules to steer the translation, grouped by rule type.
+     * @param   string                 $documentContext  What the document is about, empty when the strings are all of it.
+     * @param   array<string, string>  $terminology      The terms earlier parts of the document were translated with.
      *
      * @return  string
      *
      * @since   0.4.0
      */
-    private function systemPrompt(string $sourceLanguage, string $targetLanguage, array $rules): string
-    {
+    private function systemPrompt(
+        string $sourceLanguage,
+        string $targetLanguage,
+        array $rules,
+        string $documentContext = '',
+        array $terminology = []
+    ): string {
         $prompt = \sprintf(
             'You are a professional translator. You receive a JSON object of numbered strings to translate from'
             . ' %s to %s. Each entry has a "key", which only tells you what the string is for and is never'
@@ -356,9 +409,58 @@ final class Claude extends CMSPlugin implements SubscriberInterface
             $targetLanguage
         );
 
+        $sections = [$prompt];
+
+        if ($documentContext !== '') {
+            $sections[] = self::FRAGMENT_PROMPT;
+            $sections[] = "THE DOCUMENT THIS IS PART OF:\n" . $documentContext;
+        }
+
         $guidance = $this->ruleGuidance($rules);
 
-        return $guidance === '' ? $prompt : $prompt . "\n\n" . $guidance;
+        if ($guidance !== '') {
+            $sections[] = $guidance;
+        }
+
+        $carried = self::terminologyGuidance($terminology);
+
+        if ($carried !== '') {
+            $sections[] = $carried;
+        }
+
+        return implode("\n\n", $sections);
+    }
+
+    /**
+     * Build the guidance naming the terms earlier parts of the document were translated with.
+     *
+     * Without it the same word can come back translated one way in one part of an article and
+     * another way in the next, since each part is a request of its own.
+     *
+     * @param   array<string, string>  $terminology  The target term for each source term.
+     *
+     * @return  string  The guidance, or an empty string when no terms have been fixed yet.
+     *
+     * @since   1.4.0
+     */
+    private static function terminologyGuidance(array $terminology): string
+    {
+        $lines = [];
+
+        foreach ($terminology as $source => $target) {
+            $source = trim((string) $source);
+            $target = trim((string) $target);
+
+            if ($source !== '' && $target !== '') {
+                $lines[] = \sprintf('- "%s" -> "%s"', $source, $target);
+            }
+        }
+
+        if ($lines === []) {
+            return '';
+        }
+
+        return "ALREADY USED EARLIER IN THIS DOCUMENT (translate these the same way again):\n" . implode("\n", $lines);
     }
 
     /**
@@ -441,18 +543,40 @@ final class Claude extends CMSPlugin implements SubscriberInterface
      * schema-matching JSON, so a long HTML value cannot return as prose or with the
      * broken escaping (stray quotes or newlines) that a free-form reply can carry.
      *
-     * @param   array  $keys  The field keys expected back.
+     * A request that carries one part of a document also asks for the terms the model chose,
+     * as a list of pairs rather than a map, because a schema has to name its properties and
+     * which terms turn up is not known in advance.
+     *
+     * @param   array    $keys          The field keys expected back.
+     * @param   boolean  $withGlossary  Whether to ask for the terms chosen as well.
      *
      * @return  array
      *
      * @since   0.4.0
      */
-    private function responseFormat(array $keys): array
+    private static function responseFormat(array $keys, bool $withGlossary = false): array
     {
         $properties = [];
 
         foreach ($keys as $key) {
             $properties[$key] = ['type' => 'string'];
+        }
+
+        if ($withGlossary) {
+            $properties[self::GLOSSARY_KEY] = [
+                'type'  => 'array',
+                'items' => [
+                    'type'                 => 'object',
+                    'properties'           => [
+                        'source' => ['type' => 'string'],
+                        'target' => ['type' => 'string'],
+                    ],
+                    'required'             => ['source', 'target'],
+                    'additionalProperties' => false,
+                ],
+            ];
+
+            $keys[] = self::GLOSSARY_KEY;
         }
 
         return [
@@ -475,7 +599,9 @@ final class Claude extends CMSPlugin implements SubscriberInterface
      * @param   string  $body          The API response body.
      * @param   array   $expectedKeys  The field keys that were sent for translation.
      *
-     * @return  array  The translated strings keyed by field.
+     * @return  array{strings: array, glossary: array<string, string>}  The translated strings keyed by
+     *                                                                  field, and the terms chosen when
+     *                                                                  the request asked for them.
      *
      * @throws  \RuntimeException  When the response holds no usable translation.
      *
@@ -522,6 +648,44 @@ final class Claude extends CMSPlugin implements SubscriberInterface
             throw new \RuntimeException('The Claude API returned no usable translation.');
         }
 
-        return $strings;
+        return ['strings' => $strings, 'glossary' => self::glossaryFrom($translated)];
+    }
+
+    /**
+     * Read the terms the model chose out of its reply.
+     *
+     * The reply carries them as a list of pairs; a pair missing either side says nothing and is
+     * dropped, as is anything else that turns up in their place.
+     *
+     * @param   array  $translated  The decoded reply.
+     *
+     * @return  array<string, string>  The target term for each source term.
+     *
+     * @since   1.4.0
+     */
+    private static function glossaryFrom(array $translated): array
+    {
+        $glossary = [];
+
+        foreach ((array) ($translated[self::GLOSSARY_KEY] ?? []) as $pair) {
+            if (!\is_array($pair)) {
+                continue;
+            }
+
+            // A pair whose sides are not text at all says nothing either, and casting an array
+            // to a string here would only turn a bad answer into a warning.
+            if (!\is_string($pair['source'] ?? null) || !\is_string($pair['target'] ?? null)) {
+                continue;
+            }
+
+            $source = trim($pair['source']);
+            $target = trim($pair['target']);
+
+            if ($source !== '' && $target !== '') {
+                $glossary[$source] = $target;
+            }
+        }
+
+        return $glossary;
     }
 }

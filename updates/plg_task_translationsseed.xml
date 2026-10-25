@@ -11,9 +11,8 @@
         <version>1.2.1</version>
         <infourl title="Translator Feedback">https://github.com/joomla-projects/gsoc26_translator_feedback</infourl>
         <downloads>
-            <downloadurl type="full" format="zip">https://github.com/joomla-projects/gsoc26_translator_feedback/releases/download/v1.3.0/plg_task_translationsseed-1.2.1.zip</downloadurl>
+            <downloadurl type="full" format="zip">https://github.com/joomla-projects/gsoc26_translator_feedback/releases/download/v1.4.0/plg_task_translationsseed-1.2.1.zip</downloadurl>
         </downloads>
-        <sha512>5129e2a98f274c6b24ace0216b1b85a56400ed78c0d622d2e2adc6cc3dfe5c48a30a8d8d5a3defaf241c9979375a2dbee80ab3a57d6584da217644ee673c8b15</sha512>
         <tags>
             <tag>stable</tag>
         </tags>

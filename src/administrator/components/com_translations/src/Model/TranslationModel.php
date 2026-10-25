@@ -29,6 +29,7 @@ use Joomla\Component\Translations\Administrator\Helper\RuleRetriever;
 use Joomla\Component\Translations\Administrator\Helper\RunLock;
 use Joomla\Component\Translations\Administrator\Helper\RunResult;
 use Joomla\Component\Translations\Administrator\Helper\StringTranslator;
+use Joomla\Component\Translations\Administrator\Helper\TextChunker;
 use Joomla\Component\Translations\Administrator\Helper\TimeBudget;
 use Joomla\Component\Translations\Administrator\Helper\TranslatableValuesHelper;
 use Joomla\Database\ParameterType;
@@ -66,24 +67,51 @@ class TranslationModel extends BaseDatabaseModel
     private const NO_ANSWER = 'No answer came back from the provider: the run stopped while it waited, most likely at the server\'s time limit.';
 
     /**
+     * The most terms carried from one part of a long item to the next.
+     *
+     * The terms are there to keep a word translated the same way throughout an item, and the ones
+     * that matter are the recurring ones. A cap keeps every later request's prompt bounded however
+     * many parts an item has.
+     *
+     * @var    integer
+     * @since  1.4.0
+     */
+    private const MAX_GLOSSARY_TERMS = 60;
+
+    /**
      * Translate a source item into one target language.
      *
      * Creates the draft with its association to the source and sets the
      * per-language queue state to "review", ready for translator feedback.
      *
+     * An item whose strings are too long for one request is translated in several, as many as
+     * the run's time budget allows. The parts translated are stored as they are answered, so a
+     * run that ends before the item does has paid for nothing twice: it reports that the item is
+     * unfinished, and the next run carries on where it left off.
+     *
      * @param   integer                  $sourceItemId     The source item id.
      * @param   string                   $targetLanguage   The target language code, e.g. 'fr-FR'.
      * @param   string                   $contentType      The content type key, e.g. 'com_content.article'.
      * @param   CMSApplicationInterface  $application      The application, used to boot the component.
+     * @param   TimeBudget|null          $budget           How long this run may keep sending requests for the
+     *                                                     item; the default for where it runs when null.
+     * @param   RunResult|null           $result           The run's result, to count the parts translated in.
      *
-     * @return  void
+     * @return  boolean  True when the item is translated and its draft saved, false when parts of it are
+     *                   still to be translated by a later run.
      *
      * @throws  \RuntimeException  If the item is missing or not translatable, or the draft cannot be created.
      *
      * @since   0.3.0
      */
-    public function translate(int $sourceItemId, string $targetLanguage, string $contentType, CMSApplicationInterface $application): void
-    {
+    public function translate(
+        int $sourceItemId,
+        string $targetLanguage,
+        string $contentType,
+        CMSApplicationInterface $application,
+        ?TimeBudget $budget = null,
+        ?RunResult $result = null
+    ): bool {
         $properties = ContentTypesHelper::getProperties($contentType);
         $sourceItem = $this->getSourceItem($sourceItemId, (string) ($properties['table'] ?? ''));
 
@@ -106,8 +134,39 @@ class TranslationModel extends BaseDatabaseModel
             throw new \RuntimeException(\sprintf('Item %d is marked as not to be translated.', $sourceItemId));
         }
 
-        $machineDraft = $this->createDraft($sourceItem, $targetLanguage, $contentType, $application, $properties);
+        // Hand all translatable strings over together: the item's columns and its translatable custom fields.
+        $translatableFields = (array) ($properties['translatableFields'] ?? []);
+        $customFields       = $this->collectCustomFields($sourceItem, $properties);
+        $strings            = $this->collectTranslatableStrings($sourceItem, $translatableFields);
+
+        foreach ($customFields as $name => $customField) {
+            if ($customField['translatable']) {
+                $strings[TranslatableValuesHelper::CUSTOM_FIELD_PREFIX . $name] = $customField['value'];
+            }
+        }
+
+        $stateId    = $this->getOrCreateStateId($sourceItemId, $contentType, $targetLanguage);
+        $translated = $this->translateInChunks(
+            $strings,
+            (string) $sourceItem['language'],
+            $targetLanguage,
+            $stateId,
+            $budget ?? new TimeBudget(),
+            $result
+        );
+
+        // The run's time went before every part was translated; what is done is stored and waits.
+        if ($translated === null) {
+            return false;
+        }
+
+        $machineDraft = $this->createDraft($sourceItem, $translated, $customFields, $targetLanguage, $contentType, $application, $properties);
         $this->markReadyForReview($sourceItemId, $targetLanguage, $contentType, $machineDraft, $properties);
+
+        // The draft holds the translation now, so the parts it was built from are no longer needed.
+        $this->clearPartial($stateId);
+
+        return true;
     }
 
     /**
@@ -217,12 +276,17 @@ class TranslationModel extends BaseDatabaseModel
             }
 
             $stateId = $this->countAttempt($work);
-            $budget->startRequest();
 
             try {
-                $this->translate($work['sourceItemId'], $work['targetLanguage'], $work['contentType'], $application);
+                $finished = $this->translate(
+                    $work['sourceItemId'],
+                    $work['targetLanguage'],
+                    $work['contentType'],
+                    $application,
+                    $budget,
+                    $result
+                );
             } catch (\Throwable $e) {
-                $budget->endRequest();
                 $this->recordFailure($stateId, $e->getMessage(), $result);
 
                 if (++$failures === self::MAX_CONSECUTIVE_FAILURES) {
@@ -239,8 +303,11 @@ class TranslationModel extends BaseDatabaseModel
                 continue;
             }
 
-            $budget->endRequest();
-            $result->processed++;
+            // An item left unfinished is still pending, so a later run picks up its remaining parts.
+            if ($finished) {
+                $result->processed++;
+            }
+
             $failures = 0;
         }
     }
@@ -262,23 +329,13 @@ class TranslationModel extends BaseDatabaseModel
     {
         $db        = $this->getDatabase();
         $lastError = self::NO_ANSWER;
+        $stateId   = $work['stateId'] ?? null;
 
-        if ($work['stateId'] === null) {
-            $stateRow = (object) [
-                'queue_id'          => $this->getOrCreateQueueId($work['sourceItemId'], $work['contentType']),
-                'target_language'   => $work['targetLanguage'],
-                'translation_state' => 'pending',
-                'attempts'          => 1,
-                'last_error'        => $lastError,
-            ];
-
-            $db->insertObject('#__translations_queue_states', $stateRow, 'id');
-
-            return (int) $stateRow->id;
+        if ($stateId === null) {
+            $stateId = $this->getOrCreateStateId($work['sourceItemId'], $work['contentType'], $work['targetLanguage']);
         }
 
-        $stateId = $work['stateId'];
-        $query   = $db->getQuery(true)
+        $query = $db->getQuery(true)
             ->update($db->quoteName('#__translations_queue_states'))
             ->set($db->quoteName('attempts') . ' = ' . $db->quoteName('attempts') . ' + 1')
             ->set($db->quoteName('last_error') . ' = :lastError')
@@ -288,6 +345,52 @@ class TranslationModel extends BaseDatabaseModel
         $db->setQuery($query)->execute();
 
         return $stateId;
+    }
+
+    /**
+     * The id of an item's state row for one target language, created when it has none.
+     *
+     * An item never translated into the language has no row yet, and both an attempt and the
+     * parts of a long item need somewhere to be recorded before its first request is sent.
+     *
+     * @param   integer  $sourceItemId    The source item id.
+     * @param   string   $contentType     The content type key, e.g. 'com_content.article'.
+     * @param   string   $targetLanguage  The target language code.
+     *
+     * @return  integer  The id of the item's state row.
+     *
+     * @since   1.4.0
+     */
+    private function getOrCreateStateId(int $sourceItemId, string $contentType, string $targetLanguage): int
+    {
+        $db      = $this->getDatabase();
+        $queueId = $this->getOrCreateQueueId($sourceItemId, $contentType);
+        $query   = $db->getQuery(true)
+            ->select($db->quoteName('id'))
+            ->from($db->quoteName('#__translations_queue_states'))
+            ->where($db->quoteName('queue_id') . ' = :queueId')
+            ->where($db->quoteName('target_language') . ' = :targetLanguage')
+            ->bind(':queueId', $queueId, ParameterType::INTEGER)
+            ->bind(':targetLanguage', $targetLanguage, ParameterType::STRING);
+        $db->setQuery($query);
+
+        $stateId = (int) $db->loadResult();
+
+        if ($stateId !== 0) {
+            return $stateId;
+        }
+
+        $stateRow = (object) [
+            'queue_id'          => $queueId,
+            'target_language'   => $targetLanguage,
+            'translation_state' => 'pending',
+            'attempts'          => 0,
+            'last_error'        => '',
+        ];
+
+        $db->insertObject('#__translations_queue_states', $stateRow, 'id');
+
+        return (int) $stateRow->id;
     }
 
     /**
@@ -856,6 +959,34 @@ class TranslationModel extends BaseDatabaseModel
      */
     private function translateStrings(array $strings, string $sourceLanguage, string $targetLanguage): array
     {
+        return $this->translateChunk($strings, $sourceLanguage, $targetLanguage, '', [])['strings'];
+    }
+
+    /**
+     * Translate one request's worth of an item's strings.
+     *
+     * The rules are looked up for the strings in the request rather than for the whole item, so a
+     * request carries the rules that bear on the text it holds and no others.
+     *
+     * @param   array                  $strings          The source strings of this request, keyed by part key.
+     * @param   string                 $sourceLanguage   The source language code.
+     * @param   string                 $targetLanguage   The target language code.
+     * @param   string                 $documentContext  What the item is about, empty when this is all of it.
+     * @param   array<string, string>  $glossary         The terms the item's earlier parts were translated with.
+     *
+     * @return  array{strings: array, glossary: array<string, string>}  The translations, and the terms chosen.
+     *
+     * @throws  \RuntimeException  When no translation provider returns a translation.
+     *
+     * @since   1.4.0
+     */
+    private function translateChunk(
+        array $strings,
+        string $sourceLanguage,
+        string $targetLanguage,
+        string $documentContext,
+        array $glossary
+    ): array {
         $dispatcher = $this->getDispatcher();
 
         // Distilled rules relevant to the item, so a provider can steer the translation.
@@ -867,7 +998,251 @@ class TranslationModel extends BaseDatabaseModel
             $targetLanguage
         );
 
-        return StringTranslator::translate($dispatcher, $strings, $sourceLanguage, $targetLanguage, $rules);
+        return StringTranslator::translateInDocument(
+            $dispatcher,
+            $strings,
+            $sourceLanguage,
+            $targetLanguage,
+            $rules,
+            $documentContext,
+            $glossary
+        );
+    }
+
+    /**
+     * Translate an item's strings, in as many requests as they need and the budget allows.
+     *
+     * An item that fits in one request is sent as one, exactly as before: there is nothing to
+     * carry between requests and nothing to store between runs. An item that does not is cut
+     * into parts, and each request is told what the item is about and which terms its earlier
+     * parts were translated with, so a word is not translated one way in one part and another
+     * way in the next. Every answered request is stored before the next is sent, so a run that
+     * is cut off keeps what it has paid for.
+     *
+     * @param   array           $strings         The item's source strings keyed by field.
+     * @param   string          $sourceLanguage  The source language code.
+     * @param   string          $targetLanguage  The target language code.
+     * @param   integer         $stateId         The id of the item's state row, where parts are stored.
+     * @param   TimeBudget      $budget          How long this run may keep sending requests.
+     * @param   RunResult|null  $result          The run's result, to count the parts translated in.
+     *
+     * @return  array|null  The translated strings keyed by field, or null when parts are still to be done.
+     *
+     * @throws  \RuntimeException  When a request fails, or a provider leaves part of the item untranslated.
+     *
+     * @since   1.4.0
+     */
+    private function translateInChunks(
+        array $strings,
+        string $sourceLanguage,
+        string $targetLanguage,
+        int $stateId,
+        TimeBudget $budget,
+        ?RunResult $result
+    ): ?array {
+        $chunks = TextChunker::plan($strings, $this->chunkTargetChars());
+
+        // Nothing to translate: no request is made, so none is timed either.
+        if ($chunks === []) {
+            return [];
+        }
+
+        // One request holds the item whole, keyed by its own field names: nothing was cut, so there
+        // is no context to carry and nothing to store between runs.
+        if (\count($chunks) === 1) {
+            $budget->startRequest();
+
+            try {
+                return $this->translateStrings($chunks[0], $sourceLanguage, $targetLanguage);
+            } finally {
+                $budget->endRequest();
+            }
+        }
+
+        $fingerprint = TextChunker::fingerprint($strings);
+        $stored      = $this->loadPartial($stateId, $fingerprint);
+        $parts       = $stored['parts'];
+        $glossary    = $stored['glossary'];
+        $context     = TextChunker::documentContext($strings);
+        $sent        = false;
+
+        foreach ($chunks as $chunk) {
+            $missing = array_diff_key($chunk, $parts);
+
+            // Translated by this run or an earlier one already.
+            if ($missing === []) {
+                continue;
+            }
+
+            // The first request always goes, so a run that was allowed to start the item gets
+            // one part of it done however little time is left.
+            if ($sent && !$budget->allowsAnother()) {
+                return null;
+            }
+
+            $budget->startRequest();
+
+            try {
+                $answer = $this->translateChunk($missing, $sourceLanguage, $targetLanguage, $context, $glossary);
+            } finally {
+                $budget->endRequest();
+            }
+
+            $sent  = true;
+            $fresh = array_diff_key($answer['strings'], $parts);
+            $parts = array_merge($parts, $answer['strings']);
+
+            // The terms of the earliest parts are kept when the glossary is full: those are the
+            // ones the rest of the item has already been made to agree with.
+            $glossary = \array_slice(array_merge($glossary, $answer['glossary']), 0, self::MAX_GLOSSARY_TERMS, true);
+
+            // A request that answered nothing new is no progress, however well it went: counting
+            // it would give an item that keeps coming back short an endless set of attempts.
+            if ($fresh === []) {
+                continue;
+            }
+
+            $this->storePartial($stateId, $fingerprint, $parts, $glossary);
+            $this->resetAttempts($stateId);
+
+            if ($result !== null) {
+                $result->advanced++;
+            }
+        }
+
+        foreach ($chunks as $chunk) {
+            if (array_diff_key($chunk, $parts) !== []) {
+                throw new \RuntimeException('The provider left part of the item untranslated.');
+            }
+        }
+
+        return TextChunker::assemble($parts);
+    }
+
+    /**
+     * The source characters one request aims to carry.
+     *
+     * @return  integer
+     *
+     * @since   1.4.0
+     */
+    private function chunkTargetChars(): int
+    {
+        return (int) ComponentHelper::getParams('com_translations')
+            ->get('chunk_chars', TextChunker::DEFAULT_TARGET_CHARS);
+    }
+
+    /**
+     * Read back the parts of an item an earlier run translated.
+     *
+     * A source edited since they were stored is cut into different parts, so what was stored no
+     * longer lines up with what is being sent now and is dropped rather than joined onto it.
+     *
+     * @param   integer  $stateId      The id of the item's state row.
+     * @param   string   $fingerprint  The print of the strings being translated now.
+     *
+     * @return  array{parts: array<string, string>, glossary: array<string, string>}
+     *
+     * @since   1.4.0
+     */
+    private function loadPartial(int $stateId, string $fingerprint): array
+    {
+        $empty = ['parts' => [], 'glossary' => []];
+        $db    = $this->getDatabase();
+        $query = $db->getQuery(true)
+            ->select($db->quoteName('partial'))
+            ->from($db->quoteName('#__translations_queue_states'))
+            ->where($db->quoteName('id') . ' = :stateId')
+            ->bind(':stateId', $stateId, ParameterType::INTEGER);
+        $db->setQuery($query);
+
+        $stored = json_decode((string) $db->loadResult(), true);
+
+        if (!\is_array($stored) || ($stored['fingerprint'] ?? '') !== $fingerprint) {
+            return $empty;
+        }
+
+        return [
+            'parts'    => array_filter((array) ($stored['parts'] ?? []), '\is_string'),
+            'glossary' => array_filter((array) ($stored['glossary'] ?? []), '\is_string'),
+        ];
+    }
+
+    /**
+     * Store the parts of an item translated so far, for a later run to carry on from.
+     *
+     * @param   integer                $stateId      The id of the item's state row.
+     * @param   string                 $fingerprint  The print of the strings being translated.
+     * @param   array<string, string>  $parts        The translated parts, keyed by part key.
+     * @param   array<string, string>  $glossary     The terms the parts were translated with.
+     *
+     * @return  void
+     *
+     * @since   1.4.0
+     */
+    private function storePartial(int $stateId, string $fingerprint, array $parts, array $glossary): void
+    {
+        $db      = $this->getDatabase();
+        $partial = (string) json_encode([
+            'fingerprint' => $fingerprint,
+            'parts'       => $parts,
+            'glossary'    => $glossary,
+        ]);
+        $query   = $db->getQuery(true)
+            ->update($db->quoteName('#__translations_queue_states'))
+            ->set($db->quoteName('partial') . ' = :partial')
+            ->where($db->quoteName('id') . ' = :stateId')
+            ->bind(':partial', $partial, ParameterType::STRING)
+            ->bind(':stateId', $stateId, ParameterType::INTEGER);
+        $db->setQuery($query)->execute();
+    }
+
+    /**
+     * Drop the stored parts of an item, once its draft holds the translation.
+     *
+     * @param   integer  $stateId  The id of the item's state row.
+     *
+     * @return  void
+     *
+     * @since   1.4.0
+     */
+    private function clearPartial(int $stateId): void
+    {
+        $db    = $this->getDatabase();
+        $query = $db->getQuery(true)
+            ->update($db->quoteName('#__translations_queue_states'))
+            ->set($db->quoteName('partial') . ' = NULL')
+            ->where($db->quoteName('id') . ' = :stateId')
+            ->bind(':stateId', $stateId, ParameterType::INTEGER);
+        $db->setQuery($query)->execute();
+    }
+
+    /**
+     * Give an item its attempts back, because this run got part of it translated.
+     *
+     * An item too long for one request takes more runs than an item has attempts, so without
+     * this a long article would be set aside as failed while it was being translated normally.
+     * Only a part that was answered and stored resets them, so an item whose next part keeps
+     * failing still runs out of attempts and is set aside.
+     *
+     * @param   integer  $stateId  The id of the item's state row.
+     *
+     * @return  void
+     *
+     * @since   1.4.0
+     */
+    private function resetAttempts(int $stateId): void
+    {
+        $lastError = '';
+        $db        = $this->getDatabase();
+        $query     = $db->getQuery(true)
+            ->update($db->quoteName('#__translations_queue_states'))
+            ->set($db->quoteName('attempts') . ' = 0')
+            ->set($db->quoteName('last_error') . ' = :lastError')
+            ->where($db->quoteName('id') . ' = :stateId')
+            ->bind(':lastError', $lastError, ParameterType::STRING)
+            ->bind(':stateId', $stateId, ParameterType::INTEGER);
+        $db->setQuery($query)->execute();
     }
 
     /**
@@ -926,6 +1301,8 @@ class TranslationModel extends BaseDatabaseModel
      * writes the #__associations link itself; tags, whose model does not, get it written here.
      *
      * @param   array                    $sourceItem      The source item's column values.
+     * @param   array                    $translated      The item's translated strings, keyed by field.
+     * @param   array                    $customFields    The item's collected custom fields, keyed by name.
      * @param   string                   $targetLanguage  The target language code.
      * @param   string                   $contentType     The content type key, e.g. 'com_content.article'.
      * @param   CMSApplicationInterface  $application     The application, used to boot the component.
@@ -937,8 +1314,15 @@ class TranslationModel extends BaseDatabaseModel
      *
      * @since   0.3.0
      */
-    private function createDraft(array $sourceItem, string $targetLanguage, string $contentType, CMSApplicationInterface $application, array $properties): array
-    {
+    private function createDraft(
+        array $sourceItem,
+        array $translated,
+        array $customFields,
+        string $targetLanguage,
+        string $contentType,
+        CMSApplicationInterface $application,
+        array $properties
+    ): array {
         // Save through the managing component's model so versioning and the content events run.
         /** @var ComponentInterface&MVCFactoryServiceInterface $component */
         $component = $application->bootComponent((string) ($properties['component'] ?? ''));
@@ -953,19 +1337,8 @@ class TranslationModel extends BaseDatabaseModel
             $model->setState($stateKey, $stateValue);
         }
 
-        // Hand all translatable strings over together: the item's columns and its translatable custom fields.
         $translatableFields = (array) ($properties['translatableFields'] ?? []);
-        $customFields       = $this->collectCustomFields($sourceItem, $properties);
-        $strings            = $this->collectTranslatableStrings($sourceItem, $translatableFields);
-
-        foreach ($customFields as $name => $customField) {
-            if ($customField['translatable']) {
-                $strings[TranslatableValuesHelper::CUSTOM_FIELD_PREFIX . $name] = $customField['value'];
-            }
-        }
-
-        $translated = $this->translateStrings($strings, (string) $sourceItem['language'], $targetLanguage);
-        $fields     = $this->packTranslatedFields($sourceItem, $translatableFields, $translated);
+        $fields             = $this->packTranslatedFields($sourceItem, $translatableFields, $translated);
 
         $draft = array_merge($fields, [
             'id'       => 0,

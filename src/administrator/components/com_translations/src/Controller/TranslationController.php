@@ -58,8 +58,13 @@ class TranslationController extends BaseController
         $model = $this->getModel('Translation');
 
         try {
-            $model->translate($sourceItemId, $targetLanguage, $contentType, $app);
-            $app->enqueueMessage(Text::sprintf('COM_TRANSLATIONS_TRANSLATE_SUCCESS', $targetLanguage), 'message');
+            // A long item is translated in parts, and a web request has no time for all of them:
+            // what is done is kept, and the scheduled task finishes the rest.
+            if ($model->translate($sourceItemId, $targetLanguage, $contentType, $app)) {
+                $app->enqueueMessage(Text::sprintf('COM_TRANSLATIONS_TRANSLATE_SUCCESS', $targetLanguage), 'message');
+            } else {
+                $app->enqueueMessage(Text::sprintf('COM_TRANSLATIONS_TRANSLATE_PARTIAL', $targetLanguage), 'warning');
+            }
         } catch (\Throwable $e) {
             $app->enqueueMessage($e->getMessage() ?: Text::_('COM_TRANSLATIONS_TRANSLATE_ERROR'), 'error');
         }

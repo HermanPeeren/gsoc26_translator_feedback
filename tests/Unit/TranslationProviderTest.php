@@ -251,6 +251,184 @@ final class TranslationProviderTest extends TestCase
     }
 
     /**
+     * A request carrying one part of a long item is told so, and what the item is about.
+     *
+     * Without the first of these the model rounds off the fragment it was given: it closes tags
+     * it found open and finishes the sentence the part ends in, and both land in the article
+     * once the parts are joined.
+     *
+     * @return  void
+     *
+     * @since   1.4.0
+     */
+    public function testAPartOfALongItemIsToldWhatItIsPartOf(): void
+    {
+        $prompt = self::call(
+            'systemPrompt',
+            ['en-GB', 'nl-NL', [], "Title: Security HTTP Headers\n\nOutline:\n- Referrer-Policy", []]
+        );
+
+        $this->assertStringContainsString('one part of a longer document', $prompt);
+        $this->assertStringContainsString('do not open, close', $prompt);
+        $this->assertStringContainsString('Title: Security HTTP Headers', $prompt);
+        $this->assertStringContainsString('- Referrer-Policy', $prompt);
+    }
+
+    /**
+     * An item sent in one request is told none of that, so a normal article's prompt is unchanged.
+     *
+     * @return  void
+     *
+     * @since   1.4.0
+     */
+    public function testAnItemSentWholeIsNotToldItIsAFragment(): void
+    {
+        $prompt = self::call('systemPrompt', ['en-GB', 'nl-NL', [], '', []]);
+
+        $this->assertStringNotContainsString('one part of a longer document', $prompt);
+        $this->assertStringNotContainsString('THE DOCUMENT THIS IS PART OF', $prompt);
+    }
+
+    /**
+     * The terms an item's earlier parts were translated with reach the prompt for the next part.
+     *
+     * This is what keeps a word translated the same way through an article that took several
+     * requests, which is the whole reason the terms are carried at all.
+     *
+     * @return  void
+     *
+     * @since   1.4.0
+     */
+    public function testTheTermsEarlierPartsUsedReachTheNextPartsPrompt(): void
+    {
+        $prompt = self::call(
+            'systemPrompt',
+            ['en-GB', 'nl-NL', [], 'Title: Headers', ['header' => 'kopregel', 'policy' => 'beleid']]
+        );
+
+        $this->assertStringContainsString('ALREADY USED EARLIER IN THIS DOCUMENT', $prompt);
+        $this->assertStringContainsString('- "header" -> "kopregel"', $prompt);
+        $this->assertStringContainsString('- "policy" -> "beleid"', $prompt);
+    }
+
+    /**
+     * No terms yet means no heading about them, rather than an empty one.
+     *
+     * @return  void
+     *
+     * @since   1.4.0
+     */
+    public function testNoTermsCarriedMeansNoHeadingAboutThem(): void
+    {
+        $this->assertSame('', self::call('terminologyGuidance', [[]]));
+        $this->assertSame(
+            '',
+            self::call('terminologyGuidance', [['header' => '  ']]),
+            'A term with no translation says nothing'
+        );
+    }
+
+    /**
+     * Only a request that carries part of a document asks for the terms used back.
+     *
+     * Every string asked for is paid for in the reply, so an item sent in one request - and
+     * every language string the seed task sends - must not be asked for a glossary it has no
+     * use for.
+     *
+     * @return  void
+     *
+     * @since   1.4.0
+     */
+    public function testOnlyAPartOfADocumentAsksForTheTermsUsed(): void
+    {
+        $whole = self::call('responseFormat', [['1', '2'], false]);
+        $part  = self::call('responseFormat', [['1', '2'], true]);
+
+        $this->assertSame(['1', '2'], $whole['schema']['required']);
+        $this->assertArrayNotHasKey('glossary', $whole['schema']['properties']);
+
+        $this->assertSame(['1', '2', 'glossary'], $part['schema']['required']);
+        $this->assertSame('array', $part['schema']['properties']['glossary']['type']);
+        $this->assertSame(
+            ['source', 'target'],
+            $part['schema']['properties']['glossary']['items']['required']
+        );
+    }
+
+    /**
+     * The terms the model chose are read out of the reply, and the translation is untouched by them.
+     *
+     * @return  void
+     *
+     * @since   1.4.0
+     */
+    public function testTheTermsTheModelChoseAreReadOutOfTheReply(): void
+    {
+        $answer = self::call(
+            'parseTranslation',
+            [
+                self::reply(
+                    [
+                        '1'        => 'Kopregels',
+                        'glossary' => [
+                            ['source' => 'header', 'target' => 'kopregel'],
+                            ['source' => 'policy', 'target' => 'beleid'],
+                        ],
+                    ]
+                ),
+                ['1'],
+            ]
+        );
+
+        $this->assertSame(['1' => 'Kopregels'], $answer['strings'], 'The glossary is not mistaken for a translation');
+        $this->assertSame(['header' => 'kopregel', 'policy' => 'beleid'], $answer['glossary']);
+    }
+
+    /**
+     * A term the model only half answered is dropped rather than carried on as half a rule.
+     *
+     * @return  void
+     *
+     * @since   1.4.0
+     */
+    public function testAHalfAnsweredTermIsDropped(): void
+    {
+        $answer = self::call(
+            'parseTranslation',
+            [
+                self::reply(
+                    [
+                        '1'        => 'Kopregels',
+                        'glossary' => [
+                            ['source' => 'header', 'target' => ''],
+                            ['target' => 'beleid'],
+                            'not a pair at all',
+                            ['source' => 'policy', 'target' => 'beleid'],
+                        ],
+                    ]
+                ),
+                ['1'],
+            ]
+        );
+
+        $this->assertSame(['policy' => 'beleid'], $answer['glossary']);
+    }
+
+    /**
+     * A reply with no glossary in it carries none, so nothing is carried to the next part.
+     *
+     * @return  void
+     *
+     * @since   1.4.0
+     */
+    public function testAReplyWithoutAGlossaryCarriesNone(): void
+    {
+        $answer = self::call('parseTranslation', [self::reply(['1' => 'Kopregels']), ['1']]);
+
+        $this->assertSame([], $answer['glossary']);
+    }
+
+    /**
      * A reply that is not a translation is refused, and says which kind of failure it was.
      *
      * Saving any of these would put English, or half a sentence, into the translated article
@@ -347,7 +525,7 @@ final class TranslationProviderTest extends TestCase
      */
     private static function parseTranslation(string $body, array $expectedKeys): array
     {
-        return self::call('parseTranslation', [$body, $expectedKeys]);
+        return self::call('parseTranslation', [$body, $expectedKeys])['strings'];
     }
 
     /**
