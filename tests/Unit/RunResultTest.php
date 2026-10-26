@@ -104,6 +104,58 @@ final class RunResultTest extends TestCase
     }
 
     /**
+     * A run that translated parts of a long item, finishing none, still resumes.
+     *
+     * An item too long for one request takes more runs than there are items in the batch, and
+     * every part of it that came back was paid for. A run that reported itself done here would
+     * leave the item half translated until something else happened to start the task again.
+     *
+     * @return  void
+     *
+     * @since   1.4.0
+     */
+    public function testPartsTranslatedWithoutFinishingAnItemResume(): void
+    {
+        $result            = self::result(0, 0, 1);
+        $result->advanced  = 3;
+
+        $this->assertSame(RunResult::RESUME, $result->outcome());
+    }
+
+    /**
+     * A part that came back saves a run whose item then failed from counting as a dead run.
+     *
+     * @return  void
+     *
+     * @since   1.4.0
+     */
+    public function testAFailureAfterPartsTranslatedIsNotAnError(): void
+    {
+        $result           = self::result(0, 1, 1);
+        $result->advanced = 2;
+
+        $this->assertSame(RunResult::RESUME, $result->outcome());
+    }
+
+    /**
+     * A run that got no part and no item done is still an error, however it failed.
+     *
+     * This is the guarantee the whole class exists for: without it a provider that fails every
+     * request is asked again within the minute, run after run, each one paid for.
+     *
+     * @return  void
+     *
+     * @since   1.4.0
+     */
+    public function testNoPartAndNoItemWithAFailureIsStillAnError(): void
+    {
+        $result           = self::result(0, 1, 1);
+        $result->advanced = 0;
+
+        $this->assertSame(RunResult::ERROR, $result->outcome());
+    }
+
+    /**
      * An error message is cut to what the last_error columns hold.
      *
      * @return  void

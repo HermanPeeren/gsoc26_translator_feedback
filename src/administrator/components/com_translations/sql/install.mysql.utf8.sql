@@ -33,6 +33,10 @@ CREATE TABLE IF NOT EXISTS `#__translations_queue_states` (
   `source_version_id` int unsigned NOT NULL DEFAULT 0,
   -- The translation as it was produced, as a JSON field map, to pair against the translator's correction.
   `machine_draft` mediumtext,
+  -- The parts of an item too long to translate in one request that are translated already, as JSON:
+  -- a print of the source they belong to, the translated parts, and the terms they were translated
+  -- with. Cleared once the draft is saved; NULL while an item needs no more than one request.
+  `partial` mediumtext,
   `modified` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   UNIQUE KEY `idx_queue_lang` (`queue_id`, `target_language`),

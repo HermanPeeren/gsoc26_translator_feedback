@@ -109,10 +109,17 @@ final class TranslationsTranslate extends CMSPlugin implements SubscriberInterfa
             return Status::OK;
         }
 
-        if ($result->processed === 0 && $result->failed === 0) {
+        if ($result->processed === 0 && $result->failed === 0 && $result->advanced === 0) {
             $this->logTask($language->_('PLG_TASK_TRANSLATIONSTRANSLATE_LOG_NONE'));
 
             return Status::OK;
+        }
+
+        // A long item takes several runs, so say what was got through even when no item finished.
+        if ($result->advanced > 0) {
+            $this->logTask(
+                \sprintf($language->_('PLG_TASK_TRANSLATIONSTRANSLATE_LOG_ADVANCED'), $result->advanced)
+            );
         }
 
         if ($result->processed > 0) {

@@ -48,6 +48,16 @@ together, so the provider can keep the context between them:
   appears in the item's text, style rules kept because they apply to the whole language, and
   the result capped so the prompt stays bounded. A plugin does not filter them again.
 
+Two more getters matter only for an item too long to translate in one request, which the
+component sends in several (see [Long items](#long-items) below). They are empty for every
+other item, so a plugin that ignores them still works:
+
+- `getDocumentContext()` - what the item as a whole is about: its title and the headings of
+  its sections. Empty when the strings are the whole of what is being translated.
+- `getTerminology()` - the terms the item's earlier parts were already translated with, as
+  `['source term' => 'target term']`, for the provider to keep using. Empty for the first
+  part, and for an item sent whole.
+
 The rules arrive grouped by rule type, under the keys `terminology`, `style` and
 `preservation`. Each rule in a group is an array with `source_term`, `target_term` and
 `rule_text`, and any of them may be empty:
@@ -95,9 +105,42 @@ public function onTranslate(TranslateEvent $event): void
   running (the same pattern as the core authentication plugins). The component uses the
   first provider that returns a result.
 
+- **`reportGlossary($terms)`** - optional, and only worth setting when
+  `getDocumentContext()` was not empty: the terms the provider chose for this part, as
+  `['source term' => 'target term']`, which the component carries into the request for the
+  next part of the same item. A provider that cannot say which terms it chose leaves this
+  alone, and the next part then carries only what earlier parts reported.
+
 On any failure (missing key, network error, refusal, unreadable reply) throw an exception
 instead of returning a placeholder, so the real reason reaches the user and no draft is
 created.
+
+## Long items
+
+A provider has to send the whole translation back, so a long article asks for more output
+than a model will write in one reply and more time than a web request is given. The
+component therefore divides an item that does not fit into several requests, each about
+`chunk_chars` characters of source (an option, 4000 by default).
+
+What this means for a plugin:
+
+- **Keys can name a part of a field.** A field that had to be cut arrives as
+  `fulltext#1`, `fulltext#2` and so on. A plugin does not need to know that: return the
+  keys it received, as always, and the component joins the parts back together.
+- **A value can be an HTML fragment.** Cuts are only made between a `>` and a `<`, so no
+  tag and no word is ever split, but a part can still begin or end inside a list, a table
+  or a section. Translate it as the fragment it is: do not open, close or add tags, and do
+  not finish a sentence that runs on into the next part. The parts are concatenated exactly
+  as they come back, so anything added shows up in the middle of the article.
+- **Each part is its own request.** Keeping a word translated the same way through the
+  article is what `getTerminology()` and `reportGlossary()` are for, and
+  `getDocumentContext()` says what the article is about for a part that does not contain
+  its title.
+
+Every answered request is stored before the next is sent, so a run that ends before the
+item does loses nothing: the translate task reports that it should resume, and the next run
+carries on with the parts that are left. An item is only saved as a draft once all of its
+parts are translated.
 
 ## Example
 

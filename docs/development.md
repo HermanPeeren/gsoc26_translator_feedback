@@ -103,6 +103,7 @@ composer analyse
 | `ContentTypesHelperTest` | The shipped `contenttypes.json`: that every relation resolves, and that a type is translated after the types its items point at. |
 | `TranslationProviderTest`, `RagProviderTest` | What the Claude plugins ask the API for and, more to the point, which replies they refuse. |
 | `LanguagePackSeedTest` | Which of a language pack's strings are worth paying a provider to translate, how they are batched, and that a text repeated across files is translated once. |
+| `TextChunkerTest` | How an item too long for one request is divided into several: that the parts rebuild the source character for character, that no cut lands inside a tag or a word, and that every part belongs to exactly one request. The parts are written into the site's content, and a plan that came out differently on the next run would make the parts a previous run paid for unusable. |
 | `RunResultTest` | Whether a seed, distil or translate run asks to run again, and how much smaller a retry is. A run that resumes without progress is how one failing batch was retried, and paid for, for days. |
 | `TimeBudgetTest` | When a run stops sending requests, so it neither overruns the web server or the scheduler's lock nor stops too early. |
 | `RunLockTest` | The name of the database lock that keeps two runs of one job apart: the same for every run of a job, different per job and per site, and within MySQL's 64 characters. Two runs at once would send, and pay for, the same requests. |

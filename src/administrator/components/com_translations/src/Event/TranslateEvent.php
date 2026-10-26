@@ -105,4 +105,67 @@ class TranslateEvent extends AbstractEvent implements ResultAwareInterface
     {
         return $this->arguments['rules'] ?? [];
     }
+
+    /**
+     * Getter for what the strings' document is about, for a request that carries only part of it.
+     *
+     * An item too long to translate in one request is sent in several, and a request holding the
+     * middle of an article would otherwise have nothing to say what the article is about. Empty
+     * when the strings are the whole of what is being translated, which is the usual case.
+     *
+     * @return  string
+     *
+     * @since   1.4.0
+     */
+    public function getDocumentContext(): string
+    {
+        return (string) ($this->arguments['documentContext'] ?? '');
+    }
+
+    /**
+     * Getter for the terms earlier parts of the same document were already translated with.
+     *
+     * Keeps a word translated the same way from one part of a document to the next.
+     *
+     * @return  array<string, string>  The target term for each source term.
+     *
+     * @since   1.4.0
+     */
+    public function getTerminology(): array
+    {
+        return (array) ($this->arguments['terminology'] ?? []);
+    }
+
+    /**
+     * Report the terms a provider chose while translating, for the next part of the document.
+     *
+     * A provider that cannot say which terms it chose simply leaves this alone; the next request
+     * then carries only what earlier ones reported.
+     *
+     * Not named setGlossary: AbstractEvent::setArgument() calls a 'set' . ucfirst($name) method
+     * if the event has one, and its constructor puts every argument through setArgument(), so a
+     * setGlossary() method for a 'glossary' argument would call itself without end.
+     *
+     * @param   array<string, string>  $glossary  The target term for each source term.
+     *
+     * @return  void
+     *
+     * @since   1.4.0
+     */
+    public function reportGlossary(array $glossary): void
+    {
+        $this->setArgument('glossary', $glossary);
+    }
+
+    /**
+     * Getter for the terms the provider chose while translating.
+     *
+     * @return  array<string, string>  The target term for each source term.
+     *
+     * @since   1.4.0
+     */
+    public function getGlossary(): array
+    {
+        return (array) ($this->arguments['glossary'] ?? []);
+    }
 }

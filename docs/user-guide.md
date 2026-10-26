@@ -297,10 +297,10 @@ is a setting on the task, so you can keep a run short on a busy site.
 
 The translate task has two settings:
 
-- **Batch Size** (5 by default): the most items one run translates. Each item is one request
-  to the provider.
-- **Time per Run (seconds)**: as for the distil task below. A run stops before an item that
-  would probably not finish in time, but the first item of a run is always sent.
+- **Batch Size** (5 by default): the most items one run translates. Each item is at least one
+  request to the provider, and a long item is several (see "Long articles" below).
+- **Time per Run (seconds)**: as for the distil task below. A run stops before a request that
+  would probably not finish in time, but the first request of a run is always sent.
 
 The distil task has two settings:
 
@@ -327,18 +327,62 @@ is answered, so a run that stops part-way keeps everything it finished.
 The translate task counts its attempts the same way, per item. An item whose translation
 fails is tried again in a later run, after the items not tried yet, so it never holds up the
 rest; after its third failed attempt its cell shows **failed**, the last error is kept with it,
-and no run sends it again. This matters most for an article whose translation takes longer
-than the hosting allows a web request: the run is cut off while it waits, nothing but the
-attempt is recorded, and without the count the same article would be sent, and paid for, on
-every run. **Time per Run** cannot prevent that, since the first item of a run is always sent.
-Translate such an item by hand from its cell once the cause is dealt with, or give it new
-attempts with **Retry Failed Translations** (see "Maintenance tasks"). Editing the source item
-also gives its translations a fresh set of attempts.
+and no run sends it again. Translate such an item by hand from its cell once the cause is
+dealt with, or give it new attempts with **Retry Failed Translations** (see "Maintenance
+tasks"). Editing the source item also gives its translations a fresh set of attempts.
+
+A run that got part of a long article translated gives that article its attempts back, because
+the run worked: the attempts are there to stop an item that cannot be translated from being
+paid for again and again, not to limit how many runs a long article may take. An article whose
+*next* part keeps failing still runs out of attempts and is set aside, since a part that was
+already translated is not sent again and so does not count as progress a second time.
 
 A provider that cannot be reached, or an empty credit balance, uses up attempts as well. A run
 stops after two failures in a row, so each run spends an attempt on at most two items, but a
 schedule that keeps running through a long outage sets item after item aside. Run **Retry
 Failed Translations** once the provider answers again.
+
+### Long articles
+
+A translation provider has to write the whole translated article back, and that reply is both
+what takes the time and what the provider caps. An article of a few thousand words asks for
+more than a model will write in one reply, so it can never be translated in one request,
+however long the hosting allows the request to run; a shorter one can still take longer than a
+web request is given. Either way the run is cut off, nothing comes back, and the article is set
+aside as failed after three attempts.
+
+The component therefore translates a long article in parts, and carries on by itself:
+
+- The article is cut into parts of about **Characters per Request** characters (Options, 4000
+  by default). Cuts are only made between two HTML tags, so no tag and no word is ever split,
+  and the shallowest boundary near that size is preferred, so a part tends to end at a
+  paragraph or a heading. Where a stretch has no boundary in it at all - a long code sample -
+  the size is overshot rather than cutting through it.
+- Each part is a request of its own, and every answered request is kept before the next is
+  sent. A run that uses up its **Time per Run** stops between parts and asks to run again; the
+  next run carries on with the parts that are left. Nothing is paid for twice.
+- The article is saved as a draft, and its cell turns to **review**, only once every part is
+  translated. Until then the cell stays **pending**, and the task log says how many parts a
+  run got through.
+- So the parts read as one article, each request is told what the article is about - its title
+  and the headings of its sections - and which terms the earlier parts were already translated
+  with, so a word is not translated one way in one section and another way in the next.
+
+**Characters per Request** is the one setting worth tuning. The provider's reply grows with
+it, so it decides how long a single request takes:
+
+- Lower it if long articles still time out. Your hosting's PHP time limit for a web request is
+  what a single request has to fit inside, and 30 seconds is common on shared hosting.
+- Raise it when the scheduler runs from the command line, where there is no such limit (see
+  "From the command line, for long-running work"). Fewer, larger parts means fewer requests,
+  less context repeated in each of them, and each part reading more naturally in itself.
+
+The least you can set is 1000. An article short enough to fit in one request is sent exactly as
+it always was, in one request, so this changes nothing for ordinary content.
+
+Pressing **Translate** on a long article's queue cell does the same thing, but a web request
+has little time: expect a message saying the article is being translated in parts. The parts
+done are kept, and the scheduled task finishes it - or you can press **Translate** again.
 
 ### Running the scheduler
 
