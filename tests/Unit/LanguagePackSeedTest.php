@@ -251,7 +251,6 @@ final class LanguagePackSeedTest extends TestCase
         ];
 
         $method = new ReflectionMethod(Seeder::class, 'approvedTranslations');
-        $method->setAccessible(true);
 
         $this->assertSame(['Opslaan' => 2, 'Bewaren' => 1], $method->invoke(null, $unit));
     }
@@ -287,7 +286,6 @@ final class LanguagePackSeedTest extends TestCase
         ];
 
         $method = new ReflectionMethod(Seeder::class, 'classify');
-        $method->setAccessible(true);
         $plan = $method->invoke(null, $pairs, $states);
 
         $this->assertSame(
@@ -346,7 +344,6 @@ final class LanguagePackSeedTest extends TestCase
     {
         $seeder = (new ReflectionClass(Seeder::class))->newInstanceWithoutConstructor();
         $method = new ReflectionMethod(Seeder::class, 'requestChunks');
-        $method->setAccessible(true);
 
         return $method->invoke($seeder, self::units($pairs), Seeder::DEFAULT_REQUEST_SIZE);
     }
@@ -363,7 +360,6 @@ final class LanguagePackSeedTest extends TestCase
     private static function fingerprint(array $pair): string
     {
         $method = new ReflectionMethod(Seeder::class, 'fingerprint');
-        $method->setAccessible(true);
 
         return $method->invoke(null, $pair);
     }
@@ -380,7 +376,6 @@ final class LanguagePackSeedTest extends TestCase
     private static function units(array $pairs): array
     {
         $method = new ReflectionMethod(Seeder::class, 'units');
-        $method->setAccessible(true);
 
         return $method->invoke(null, $pairs);
     }

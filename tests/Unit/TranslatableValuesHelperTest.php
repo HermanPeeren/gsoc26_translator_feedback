@@ -213,7 +213,6 @@ final class TranslatableValuesHelperTest extends TestCase
     {
         $model  = (new ReflectionClass(TranslatorfeedbackModel::class))->newInstanceWithoutConstructor();
         $method = new ReflectionMethod(TranslatorfeedbackModel::class, 'applyTranslation');
-        $method->setAccessible(true);
 
         return $method->invoke($model, $row, $fields, $data);
     }
