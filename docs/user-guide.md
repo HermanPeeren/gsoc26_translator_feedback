@@ -372,13 +372,42 @@ The component therefore translates a long article in parts, and carries on by it
 it, so it decides how long a single request takes:
 
 - Lower it if long articles still time out. Your hosting's PHP time limit for a web request is
-  what a single request has to fit inside, and 30 seconds is common on shared hosting.
-- Raise it when the scheduler runs from the command line, where there is no such limit (see
-  "From the command line, for long-running work"). Fewer, larger parts means fewer requests,
-  less context repeated in each of them, and each part reading more naturally in itself.
+  what a single request has to fit inside, and 30 seconds is common on shared hosting. That
+  limit is the one that counts, because translating has to run over the web for now - see
+  "Translating needs the web, not the command line" below.
+- Raise it when your hosting allows a web request a generous time. Fewer, larger parts means
+  fewer requests, less context repeated in each of them, and each part reading more naturally
+  in itself.
 
 The least you can set is 1000. An article short enough to fit in one request is sent exactly as
 it always was, in one request, so this changes nothing for ordinary content.
+
+### Translating needs the web, not the command line
+
+Run the **translate** task through Web Cron or the Lazy Scheduler. Started from the command
+line it translates the article, pays for it, and then cannot save the draft, because of an open
+Joomla bug: a component model's form cannot be loaded outside a web request
+([joomla/joomla-cms#43347](https://github.com/joomla/joomla-cms/issues/43347), open since
+April 2024 and affecting Joomla 4, 5 and 6). The run ends with
+`Undefined constant "Joomla\CMS\MVC\Model\JPATH_COMPONENT"`.
+
+This is about the translate task only. The seed and distil tasks have no draft to save, so they
+are unaffected and the command line remains the better place for them.
+
+**Nothing is paid for twice.** The parts that were translated are stored, so a later run reuses
+them and sends no new requests. But a command-line attempt leaves an unfinished draft behind in
+the target language, with no link to its source, and that draft blocks every later attempt with
+a duplicate-alias error. To recover an item a command-line run has touched:
+
+1. Delete the unfinished translation in the target language (Content, Articles, filtered on
+   that language - it is the one that is not linked to its source).
+2. If the item is already shown as **failed**, run **Retry Failed Translations** (see
+   "Maintenance tasks").
+3. Let the translate task run over the web. It finishes the article from the stored parts,
+   without sending the text again.
+
+That holds as long as the source has not been edited in the meantime; an edited source is cut
+into different parts, so the stored ones no longer fit and are translated again.
 
 Pressing **Translate** on a long article's queue cell does the same thing, but a web request
 has little time: expect a message saying the article is being translated in parts. The parts
@@ -441,8 +470,14 @@ web time limit applies; the tasks stay managed in the Administrator as before. T
 User Manual explains the set-up in [How to Run Scheduled Tasks from the Command Line](https://guide.joomla.org/user-manual/scheduled-tasks/run-task-from-cli).
 For this component:
 
+- Use it for the **seed** and **distil** tasks. The translate task cannot save a draft from the
+  command line while [joomla/joomla-cms#43347](https://github.com/joomla/joomla-cms/issues/43347)
+  is open, so leave that one to Web Cron or the Lazy Scheduler - see "Translating needs the web,
+  not the command line" above.
 - Let the cronjob run `scheduler:run --all` every minute, so the seed and distil tasks run
-  side by side instead of taking turns, and switch Web Cron off while you use it.
+  side by side instead of taking turns. `--all` runs every task that is due, the translate task
+  included, so while #43347 is open give the cronjob one `scheduler:run --id=<id>` line per
+  task instead, and keep Web Cron on for translating.
 - Leave **Time per Run** at 0 in both tasks: from the command line a run then takes 240
   seconds.
 - Keep the **Task Timeout** at 600 seconds and the other settings as in the table above.
