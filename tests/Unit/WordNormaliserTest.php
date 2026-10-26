@@ -172,7 +172,6 @@ final class WordNormaliserTest extends TestCase
     private static function usableResult(array $result, array $words): array
     {
         $method = new ReflectionMethod(WordNormaliser::class, 'usableResult');
-        $method->setAccessible(true);
 
         return $method->invoke(null, $result, $words);
     }

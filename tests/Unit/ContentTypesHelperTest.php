@@ -238,7 +238,6 @@ final class ContentTypesHelperTest extends TestCase
     private static function setMap(?array $map): void
     {
         $property = new ReflectionProperty(ContentTypesHelper::class, 'map');
-        $property->setAccessible(true);
         $property->setValue(null, $map);
     }
 }

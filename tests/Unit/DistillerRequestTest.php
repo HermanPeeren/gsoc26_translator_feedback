@@ -331,7 +331,6 @@ final class DistillerRequestTest extends TestCase
     private static function callModel(string $method, array $arguments)
     {
         $reflection = new ReflectionMethod(DistillerModel::class, $method);
-        $reflection->setAccessible(true);
 
         return $reflection->invokeArgs(null, $arguments);
     }

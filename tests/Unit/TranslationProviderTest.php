@@ -547,7 +547,6 @@ final class TranslationProviderTest extends TestCase
     {
         $plugin     = (new ReflectionClass(Claude::class))->newInstanceWithoutConstructor();
         $reflection = new ReflectionMethod(Claude::class, $method);
-        $reflection->setAccessible(true);
 
         return $reflection->invokeArgs($plugin, $arguments);
     }

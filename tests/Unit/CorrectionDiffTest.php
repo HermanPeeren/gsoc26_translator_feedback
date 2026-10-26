@@ -177,7 +177,6 @@ final class CorrectionDiffTest extends TestCase
     {
         $model  = (new ReflectionClass(DistillerModel::class))->newInstanceWithoutConstructor();
         $method = new ReflectionMethod(DistillerModel::class, 'diff');
-        $method->setAccessible(true);
 
         return $method->invoke($model, $machineDraft, $humanCorrection);
     }
