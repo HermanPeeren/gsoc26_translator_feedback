@@ -7,4 +7,13 @@ parameters:
   scanDirectories:
     - joomla
   ignoreErrors:
+    # Reading why a managing component refused to save a draft. Joomla offers no other way: its
+    # AdminModel::save() catches the exception itself, records it with setError() and returns false,
+    # so the deprecation's advice to "catch thrown Exceptions instead" cannot be followed here.
+    # Allowed for this one call, so that a failed translation says what was wrong with it; see
+    # TranslationModel::saveRefusal(). To be revisited when this package follows Joomla 7.
+    -
+      message: '#^Call to deprecated method getError\(\)#'
+      path: src/administrator/components/com_translations/src/Model/TranslationModel.php
+      count: 1
   reportUnmatchedIgnoredErrors: false
