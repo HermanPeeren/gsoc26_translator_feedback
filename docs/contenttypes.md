@@ -96,6 +96,20 @@ per type (`state` for articles, `published` for categories, tags and menu items)
 unchanged. These are the structural, untranslated fields a new item needs, such as an
 article's `catid`, `access` and `created_by`.
 
+**`aliasScope`** (array, optional) - the columns that decide which items share an alias
+space with the draft. Joomla keeps an alias unique among an item's neighbours and refuses
+a save that would clash, and what counts as a neighbour differs per type: an article's
+alias has to be free within its category (`["catid"]`), a category's within its parent and
+extension (`["parent_id", "extension"]`), a tag's within its parent (`["parent_id"]`). The
+producer reads the aliases held there and appends the language code, then a number, until
+it has one that is free.
+
+The language itself is left out of the scope, even for menu items, where Joomla does scope
+by it. A scope that holds more columns than Joomla's would let a save be refused after the
+translation has been paid for; one that holds fewer only makes an alias longer than it had
+to be. A type that names no columns leaves its alias to the managing component, which is
+what every type did before 1.4.2.
+
 **`context_associations`** (string, optional) - the `#__associations` context that ties
 the language versions of an item together, for example `com_content.item`. It is what
 links a translated draft back to its source. Omit it for a type that is not associable.
@@ -202,6 +216,7 @@ category's tags are stored under `com_content.category`, so the category entry s
     "context_associations": "com_content.item",
     "context_custom_fields": "com_content.article",
     "draftCopyFields": ["catid", "access", "created_by"],
+    "aliasScope": ["catid"],
     "stateField": "state",
     "associatedFields": { "catid": "com_categories.category" },
     "m2m_relation": { "tags": "com_tags.tag" }
@@ -222,6 +237,7 @@ points at, so a translated menu item opens the translated page.
     "table": "#__menu",
     "context_associations": "com_menus.item",
     "draftCopyFields": ["link", "type", "component_id", "browserNav", "access", "img", "template_style_id", "params"],
+    "aliasScope": ["parent_id", "client_id"],
     "stateField": "published",
     "linkTargets": {
         "com_content.article": { "id": "com_content.article" },

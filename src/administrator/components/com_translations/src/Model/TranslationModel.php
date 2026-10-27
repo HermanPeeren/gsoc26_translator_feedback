@@ -25,6 +25,7 @@ use Joomla\CMS\Plugin\PluginHelper;
 use Joomla\Component\Fields\Administrator\Helper\FieldsHelper;
 use Joomla\Component\Fields\Administrator\Model\FieldModel;
 use Joomla\Component\Translations\Administrator\Helper\ContentTypesHelper;
+use Joomla\Component\Translations\Administrator\Helper\DraftAlias;
 use Joomla\Component\Translations\Administrator\Helper\RuleRetriever;
 use Joomla\Component\Translations\Administrator\Helper\RunLock;
 use Joomla\Component\Translations\Administrator\Helper\RunResult;
@@ -1379,11 +1380,6 @@ class TranslationModel extends BaseDatabaseModel
             }
         }
 
-        // Suffix on a clash with the source, otherwise let the component build the alias from the title.
-        // Set it even when empty, because com_menus derives a menu item's path from the alias during check.
-        $slug           = ApplicationHelper::stringURLSafe((string) ($fields['title'] ?? ''), $targetLanguage);
-        $draft['alias'] = $slug === $sourceItem['alias'] ? $slug . '-' . strtolower($targetLanguage) : '';
-
         // Carry the source's untranslated structural fields onto the draft unchanged.
         foreach ((array) ($properties['draftCopyFields'] ?? []) as $field) {
             $draft[$field] = $sourceItem[$field] ?? null;
@@ -1461,6 +1457,16 @@ class TranslationModel extends BaseDatabaseModel
                 : $introtext;
         }
 
+        // The draft's own title gives it its alias, and where a neighbour already holds that one the
+        // language is appended. The component checks this but does not solve it: it refuses the save,
+        // and that refusal costs a translation that has already been paid for. The alias is picked
+        // last because the neighbours are the ones around where the draft ends up, which the fields
+        // repointed above decide. A title that leaves no alias behind, as Persian does where Joomla
+        // cannot transliterate it, falls back to the source's rather than to Joomla's timestamp.
+        $slug           = ApplicationHelper::stringURLSafe((string) ($fields['title'] ?? ''), $targetLanguage);
+        $base           = $slug !== '' ? $slug : (string) $sourceItem['alias'];
+        $draft['alias'] = DraftAlias::pick($base, $targetLanguage, $this->neighbouringAliases($base, $draft, $sourceItem, $properties));
+
         if (!$model->save($draft)) {
             throw new \RuntimeException(
                 \sprintf(
@@ -1502,6 +1508,72 @@ class TranslationModel extends BaseDatabaseModel
         }
 
         return $machineDraft;
+    }
+
+    /**
+     * Read the aliases already held where the draft is about to be saved.
+     *
+     * What counts as a neighbour differs per content type, and the map names the columns that
+     * decide it: an article shares its alias space with the articles in its category, a category
+     * or a tag with the children of its parent. Only the aliases that could stand in the draft's
+     * way are read, which are the ones its own alias is built from, and the row the draft updates
+     * is left out so that a re-translation keeps the alias it already has. A content type whose
+     * entry names no columns gets no aliases back and keeps the one its title gives it.
+     *
+     * @param   string                $base        The alias the draft's title gives it, which its neighbours are read around.
+     * @param   array<string, mixed>  $draft       The draft's column values so far.
+     * @param   array<string, mixed>  $sourceItem  The source item's column values, for what the draft does not carry.
+     * @param   array<string, mixed>  $properties  The content type's properties from the map.
+     *
+     * @return  string[]  The aliases the draft's neighbours hold.
+     *
+     * @since   1.4.2
+     */
+    private function neighbouringAliases(string $base, array $draft, array $sourceItem, array $properties): array
+    {
+        $scope = (array) ($properties['aliasScope'] ?? []);
+        $table = (string) ($properties['table'] ?? '');
+
+        if ($scope === [] || $table === '' || $base === '') {
+            return [];
+        }
+
+        $db    = $this->getDatabase();
+        $query = $db->getQuery(true)
+            ->select($db->quoteName('alias'))
+            ->from($db->quoteName($table))
+            ->where($db->quoteName('alias') . ' LIKE ' . $db->quote($db->escape($base, true) . '%', false));
+
+        // Each value needs a variable of its own: bind() keeps a reference to what it is given.
+        $values = [];
+
+        foreach ($scope as $column) {
+            $column = (string) $column;
+
+            if (!isset($draft[$column]) && !isset($sourceItem[$column])) {
+                continue;
+            }
+
+            $values[$column] = $draft[$column] ?? $sourceItem[$column];
+
+            $query->where($db->quoteName($column) . ' = :' . $column)
+                ->bind(
+                    ':' . $column,
+                    $values[$column],
+                    is_numeric($values[$column]) ? ParameterType::INTEGER : ParameterType::STRING
+                );
+        }
+
+        $draftId = (int) ($draft['id'] ?? 0);
+
+        if ($draftId > 0) {
+            $query->where($db->quoteName('id') . ' != :draftId')
+                ->bind(':draftId', $draftId, ParameterType::INTEGER);
+        }
+
+        $db->setQuery($query);
+
+        return array_map('strval', (array) $db->loadColumn());
     }
 
     /**

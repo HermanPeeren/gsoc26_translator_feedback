@@ -78,6 +78,32 @@ final class ContentTypesHelperTest extends TestCase
     }
 
     /**
+     * Every mapped type says which items share an alias space with its drafts.
+     *
+     * Without it the draft keeps whatever its title gives it, and the managing component
+     * refuses the save as soon as another language got to that alias first - after the
+     * translation has been paid for. A content type added without an alias scope would
+     * translate for a while and then start failing on the languages furthest down the list.
+     *
+     * @return  void
+     *
+     * @since   1.4.2
+     */
+    public function testEveryTypeNamesWhatScopesItsAlias(): void
+    {
+        foreach (ContentTypesHelper::getContentTypes() as $contentType) {
+            $scope = ContentTypesHelper::getProperties($contentType)['aliasScope'] ?? null;
+
+            $this->assertIsArray($scope, \sprintf('%s names the columns that scope its alias', $contentType));
+            $this->assertNotEmpty($scope, \sprintf('%s names at least one column', $contentType));
+
+            foreach ($scope as $column) {
+                $this->assertIsString($column, \sprintf('%s scopes its alias by column names', $contentType));
+            }
+        }
+    }
+
+    /**
      * A relation that names a type the map does not hold is reported, not skipped.
      *
      * It is a typo in a data file, and the alternative to failing here is an item pointed at
