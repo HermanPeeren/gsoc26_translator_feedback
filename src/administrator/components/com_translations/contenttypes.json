@@ -18,6 +18,7 @@
             "context_associations": "com_content.item",
             "context_custom_fields": "com_content.article",
             "draftCopyFields": ["catid", "access", "created_by"],
+            "aliasScope": ["catid"],
             "stateField": "state",
             "associatedFields": { "catid": "com_categories.category" },
             "m2m_relation": { "tags": "com_tags.tag" }
@@ -40,6 +41,7 @@
             "context_custom_fields": "com_content.categories",
             "copyCustomFieldAssignments": true,
             "draftCopyFields": ["parent_id", "extension", "access", "created_user_id"],
+            "aliasScope": ["parent_id", "extension"],
             "stateField": "published",
             "modelState": { "category.extension": "com_content" },
             "context_tags": "com_content.category",
@@ -62,6 +64,7 @@
             "context_associations": "com_tags.item",
             "associationsByModel": false,
             "draftCopyFields": ["parent_id", "access", "created_user_id"],
+            "aliasScope": ["parent_id"],
             "stateField": "published"
         },
         "com_menus.item": {
@@ -75,6 +78,7 @@
             "context_associations": "com_menus.item",
             "limitToClient": 0,
             "draftCopyFields": ["link", "type", "component_id", "browserNav", "access", "img", "template_style_id", "params"],
+            "aliasScope": ["parent_id", "client_id"],
             "stateField": "published",
             "linkTargets": {
                 "com_content.article": { "id": "com_content.article" },

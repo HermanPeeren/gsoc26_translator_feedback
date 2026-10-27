@@ -186,6 +186,25 @@ Two limits are worth knowing. It applies only to a **new** item, never to one yo
 editing. And it applies to categories of the extension the component manages and to **site**
 menu items only, because those are the ones the component translates.
 
+### The alias of a translated item
+
+A translation gets the alias its own translated title gives it, so a Portuguese article is
+reachable under a Portuguese URL.
+
+Joomla keeps an alias unique among an item's neighbours - an article among the articles of its
+category, a category or a tag among the children of its parent - and the language is no part of
+that. Two languages whose titles lead to the same alias are neighbours like any other: Spanish
+"Referencia" and Portuguese "Referencia" both come down to `referencia`. Where the alias a
+translation would take is already held, the component appends the language code, so the second
+of them becomes `referencia-pt-pt`, and where that is held too it is numbered.
+
+A title Joomla cannot write in the URL alphabet at all, as it cannot for Persian, falls back to
+the source item's alias with the language appended, rather than to the timestamp Joomla would
+use.
+
+Changing an alias by hand afterwards is fine, but translating the item again builds it from the
+title once more, as saving an item in Joomla with the alias field emptied does.
+
 ### Rules
 
 The Rules view lists what the component has learned, one row per rule, for one target
@@ -396,8 +415,9 @@ are unaffected and the command line remains the better place for them.
 
 **Nothing is paid for twice.** The parts that were translated are stored, so a later run reuses
 them and sends no new requests. But a command-line attempt leaves an unfinished draft behind in
-the target language, with no link to its source, and that draft blocks every later attempt with
-a duplicate-alias error. To recover an item a command-line run has touched:
+the target language, with no link to its source. A later run cannot tell that the unfinished
+draft belongs to the item, and saves a second translation beside it. To recover an item a
+command-line run has touched:
 
 1. Delete the unfinished translation in the target language (Content, Articles, filtered on
    that language - it is the one that is not linked to its source).
