@@ -1463,7 +1463,12 @@ class TranslationModel extends BaseDatabaseModel
 
         if (!$model->save($draft)) {
             throw new \RuntimeException(
-                \sprintf('Could not create the %s draft for item %d.', $targetLanguage, (int) $sourceItem['id'])
+                \sprintf(
+                    'Could not create the %s draft for item %d: %s',
+                    $targetLanguage,
+                    (int) $sourceItem['id'],
+                    self::saveRefusal($model)
+                )
             );
         }
 
@@ -1497,6 +1502,35 @@ class TranslationModel extends BaseDatabaseModel
         }
 
         return $machineDraft;
+    }
+
+    /**
+     * Why the managing component refused to save a draft.
+     *
+     * Without this the queue and the task log say only that the draft could not be created, and an
+     * item is set aside after three attempts with nothing to act on: a duplicate alias, a missing
+     * category and a failed check all read the same. The reason matters most for the translations
+     * that fail for a reason the translator can fix.
+     *
+     * AdminModel::save() reports every failure by calling setError() and returning false, and that
+     * store is readable only through getError(), which Joomla deprecated in 3.1.4 and removes in 7.
+     * Its deprecation says to catch thrown exceptions instead, which cannot be done here: save()
+     * catches the exception itself and turns it into an error before returning false. So the call is
+     * deliberate, phpstan.neon allows this one line by name rather than silencing it at the call
+     * site, and it has to be revisited when this package follows Joomla 7.
+     *
+     * @param   AdminModel  $model  The managing component's model, after a save that returned false.
+     *
+     * @return  string  What the component said, or a note that it said nothing.
+     *
+     * @since   1.4.1
+     */
+    private static function saveRefusal(AdminModel $model): string
+    {
+        // A model is free to refuse without saying why, so this still has to read as a sentence.
+        $refusal = trim($model->getError());
+
+        return $refusal === '' ? 'the component gave no reason' : $refusal;
     }
 
     /**
