@@ -14,7 +14,6 @@ namespace Joomla\Component\Translations\Tests\Unit;
 
 use Joomla\Component\Translations\Administrator\Helper\StringTranslator;
 use PHPUnit\Framework\TestCase;
-use ReflectionMethod;
 
 /**
  * What a provider answers is only kept where it can belong to the string it answers.
@@ -119,6 +118,38 @@ final class StringTranslatorTest extends TestCase
     }
 
     /**
+     * A part held from an earlier run is checked like a fresh answer.
+     *
+     * This is where it matters most. A fresh answer that cannot belong is asked for again, while
+     * a stored one is reused without a request, so an item answered wrong once went on failing
+     * the same way every time it was tried - which is what item 375 on guide.joomla.org did.
+     *
+     * @return  void
+     *
+     * @since   1.4.5
+     */
+    public function testAStoredPartIsCheckedLikeAFreshAnswer(): void
+    {
+        $sources = [
+            'title'       => 'Image test',
+            'introtext#1' => str_repeat('<p>A paragraph of the body text.</p>', 40),
+            'introtext#2' => str_repeat('<p>Another paragraph of the body.</p>', 40),
+        ];
+
+        $stored = [
+            'title'       => str_repeat('<p>Um paragrafo do texto do corpo.</p>', 40),
+            'introtext#1' => 'Prueba de imagen',
+            'introtext#2' => str_repeat('<p>Outro paragrafo do corpo.</p>', 40),
+        ];
+
+        $this->assertSame(
+            ['introtext#2' => $stored['introtext#2']],
+            self::keep($sources, $stored),
+            'the swapped pair goes, the part that belongs stays'
+        );
+    }
+
+    /**
      * Run the provider's answer through the check.
      *
      * @param   array  $strings       The source strings.
@@ -130,8 +161,6 @@ final class StringTranslatorTest extends TestCase
      */
     private static function keep(array $strings, array $translations): array
     {
-        $method = new ReflectionMethod(StringTranslator::class, 'ofTheirSources');
-
-        return $method->invokeArgs(null, [$strings, $translations]);
+        return StringTranslator::ofTheirSources($strings, $translations);
     }
 }

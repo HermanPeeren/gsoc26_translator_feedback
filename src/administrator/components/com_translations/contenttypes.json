@@ -78,7 +78,8 @@
             "context_associations": "com_menus.item",
             "limitToClient": 0,
             "draftCopyFields": ["link", "type", "component_id", "browserNav", "access", "img", "template_style_id", "params"],
-            "aliasScope": ["parent_id", "client_id"],
+            "aliasScope": ["parent_id", "client_id", "language"],
+            "aliasReservedAtRoot": true,
             "stateField": "published",
             "linkTargets": {
                 "com_content.article": { "id": "com_content.article" },

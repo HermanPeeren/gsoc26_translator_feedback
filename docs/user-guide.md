@@ -207,6 +207,12 @@ A title Joomla cannot write in the URL alphabet at all, as it cannot for Persian
 the source item's alias with the language appended, rather than to the timestamp Joomla would
 use.
 
+A translated menu item is placed at the root of its own language's menu, where Joomla keeps
+a few names for itself: `component`, and every folder in the site root. A menu item that
+translates to one of those - "Media", "Plugins", "Modules" - takes the language-appended
+alias instead, as it would from any other alias already in use. Two languages may share a
+menu item alias, as Joomla allows, so a menu URL keeps the alias its own title gives it.
+
 An alias is also cut back to a hundred characters, on a word. Joomla builds one out of the whole
 title and gives it four hundred characters in the database, so an item carrying more than a title
 in its title field would otherwise produce an alias that cannot be stored at all, and the

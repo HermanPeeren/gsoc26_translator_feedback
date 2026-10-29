@@ -152,11 +152,15 @@ class StringTranslator
      * @param   array  $strings       The source strings, keyed by the caller.
      * @param   array  $translations  What the provider answered, keyed the same.
      *
+     * Parts held from an earlier run go through this as well, and matter more: a fresh answer that
+     * cannot belong is asked for again, while a stored one is reused on every attempt, so an item
+     * that was once answered wrong fails the same way for as long as it is kept.
+     *
      * @return  array  The answers that can belong to their key.
      *
      * @since   1.4.4
      */
-    private static function ofTheirSources(array $strings, array $translations): array
+    public static function ofTheirSources(array $strings, array $translations): array
     {
         $kept = [];
 
