@@ -198,6 +198,11 @@ that. Two languages whose titles lead to the same alias are neighbours like any 
 translation would take is already held, the component appends the language code, so the second
 of them becomes `referencia-pt-pt`, and where that is held too it is numbered.
 
+Joomla has the last word on whether an alias is free, and it says so only by refusing to save.
+Where it refuses one the component read as free, the translation is still saved, under an alias
+that names the item it was translated from. That is worth knowing because it is the one alias
+that does not read well - `referencia-pt-pt-587` - and seeing one means the two disagreed.
+
 A title Joomla cannot write in the URL alphabet at all, as it cannot for Persian, falls back to
 the source item's alias with the language appended, rather than to the timestamp Joomla would
 use.
