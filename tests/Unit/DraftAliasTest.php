@@ -173,6 +173,87 @@ final class DraftAliasTest extends TestCase
     }
 
     /**
+     * An alias is cut back to a length the database will take.
+     *
+     * On guide.joomla.org an article held its body text in its title, so the alias built from it
+     * ran past the 400 characters the column has and the save was refused - after the translation
+     * had been paid for. Joomla builds an alias out of the whole title without looking, so this is
+     * the component's to get right.
+     *
+     * @return  void
+     *
+     * @since   1.4.4
+     */
+    public function testALongAliasIsCutBack(): void
+    {
+        $base  = rtrim(str_repeat('problema-de-margem-na-imagem-', 20), '-');
+        $alias = DraftAlias::pick($base, 'pt-PT', []);
+
+        $this->assertLessThanOrEqual(DraftAlias::MAX_LENGTH, mb_strlen($alias));
+        $this->assertStringStartsWith('problema-de-margem-na-imagem', $alias);
+    }
+
+    /**
+     * The cut lands on a word, not halfway through one.
+     *
+     * @return  void
+     *
+     * @since   1.4.4
+     */
+    public function testTheCutLandsOnAWord(): void
+    {
+        $alias = DraftAlias::pick(str_repeat('abcdefgh-', 30), 'pt-PT', []);
+
+        $this->assertStringEndsWith('abcdefgh', $alias, 'the alias ends where a word does');
+        $this->assertStringEndsNotWith('-', $alias);
+        $this->assertLessThanOrEqual(DraftAlias::MAX_LENGTH, mb_strlen($alias));
+    }
+
+    /**
+     * A first word longer than the limit is cut where the limit falls.
+     *
+     * There is no word boundary to land on, and an alias that cannot be stored is worse than one
+     * that stops mid-word.
+     *
+     * @return  void
+     *
+     * @since   1.4.4
+     */
+    public function testAWordLongerThanTheLimitIsStillCut(): void
+    {
+        $alias = DraftAlias::pick(str_repeat('a', 300), 'pt-PT', []);
+
+        $this->assertSame(DraftAlias::MAX_LENGTH, mb_strlen($alias));
+    }
+
+    /**
+     * Stepping aside is cut back too, so the second attempt is storable as well.
+     *
+     * @return  void
+     *
+     * @since   1.4.4
+     */
+    public function testSteppingAsideIsCutBackAsWell(): void
+    {
+        $aside = DraftAlias::stepAside(str_repeat('margem-', 60), 'pt-PT', 375);
+
+        $this->assertLessThanOrEqual(DraftAlias::MAX_LENGTH + 20, mb_strlen($aside));
+        $this->assertStringEndsWith('-pt-pt-375', $aside);
+    }
+
+    /**
+     * A short alias is left exactly as it is.
+     *
+     * @return  void
+     *
+     * @since   1.4.4
+     */
+    public function testAShortAliasIsUntouched(): void
+    {
+        $this->assertSame('referencia', DraftAlias::pick('referencia', 'pt-PT', []));
+    }
+
+    /**
      * An alias that only starts the same is a neighbour like any other, not a clash.
      *
      * @return  void
