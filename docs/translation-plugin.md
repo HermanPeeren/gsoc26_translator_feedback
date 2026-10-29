@@ -101,6 +101,13 @@ public function onTranslate(TranslateEvent $event): void
 - **`addResult($translated)`** - an associative array with **the same keys** as received,
   each value replaced by its translation. Keep the keys exactly, so the component can map
   each value back to its field; a value that should not change may be returned unchanged.
+
+  A value is kept only where it can be a translation of the string it comes back under: one
+  that differs from its source by more than four times either way, once either of them is past
+  200 characters, is dropped. That is not a style rule but a guard against answers arriving
+  under each other's keys, which costs an item its title and its body at once. A dropped value
+  counts as not translated: the field keeps its source text, and a missing fragment of a long
+  item stops that item so it is tried again.
 - **`stopPropagation()`** - one provider answers per item, so stop the rest of the group
   running (the same pattern as the core authentication plugins). The component uses the
   first provider that returns a result.

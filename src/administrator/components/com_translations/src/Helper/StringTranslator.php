@@ -32,6 +32,25 @@ use Joomla\Event\DispatcherInterface;
 class StringTranslator
 {
     /**
+     * The length up to which a translation is never judged by how much longer it is than its source.
+     *
+     * A short string is where translation stretches most - a word becomes a phrase, an English
+     * label becomes a German compound sentence - and the whole of that happens well inside this.
+     *
+     * @var    integer
+     * @since  1.4.4
+     */
+    public const SHORT_ENOUGH = 200;
+
+    /**
+     * How many times its source a longer translation may be before it is not one.
+     *
+     * @var    integer
+     * @since  1.4.4
+     */
+    public const FACTOR = 4;
+
+    /**
      * Translate a collection of strings.
      *
      * @param   DispatcherInterface  $dispatcher      The dispatcher to raise the event on.
@@ -107,10 +126,54 @@ class StringTranslator
         // Use the first provider that returned translations.
         foreach ((array) $event->getArgument('result', []) as $providerResult) {
             if (\is_array($providerResult) && $providerResult !== []) {
-                return ['strings' => $providerResult, 'glossary' => $event->getGlossary()];
+                return ['strings' => self::ofTheirSources($strings, $providerResult), 'glossary' => $event->getGlossary()];
             }
         }
 
         throw new \RuntimeException('No translation provider is enabled. Enable a translation plugin to translate content.');
+    }
+
+    /**
+     * Keep only the translations that can be translations of the strings they came back under.
+     *
+     * A provider answers in a keyed object, and a key says which source string an answer belongs
+     * to. On guide.joomla.org a request carrying an article's title beside the first fragment of
+     * its body came back with the fragment under the title's key, and nothing noticed: the draft
+     * took a body for its title and Joomla was asked to build an alias out of it.
+     *
+     * A translation is not the same length as its source, and for a short string it can be several
+     * times as long, so this only refuses what no language stretches to: an answer that differs
+     * from its source by more than FACTOR either way, once either of them is past SHORT_ENOUGH.
+     * Both halves of a swap go: the body that came back as a title, and the title that came back
+     * as the body. An answer that is refused is simply absent, which the callers already handle -
+     * a field keeps its source text, and a fragment that never arrived stops the item, so it is
+     * tried again rather than saved wrong.
+     *
+     * @param   array  $strings       The source strings, keyed by the caller.
+     * @param   array  $translations  What the provider answered, keyed the same.
+     *
+     * @return  array  The answers that can belong to their key.
+     *
+     * @since   1.4.4
+     */
+    private static function ofTheirSources(array $strings, array $translations): array
+    {
+        $kept = [];
+
+        foreach ($translations as $key => $translation) {
+            $source    = mb_strlen((string) ($strings[$key] ?? ''));
+            $translated = mb_strlen((string) $translation);
+
+            // Both ends of a swap are refused: the body that came back as a title is too long for
+            // it, and the title that came back as the body is as far too short.
+            if (max($source, $translated) > self::SHORT_ENOUGH
+                && ($translated > $source * self::FACTOR || $source > $translated * self::FACTOR)) {
+                continue;
+            }
+
+            $kept[$key] = $translation;
+        }
+
+        return $kept;
     }
 }

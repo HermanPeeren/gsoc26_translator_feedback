@@ -29,6 +29,20 @@ namespace Joomla\Component\Translations\Administrator\Helper;
 final class DraftAlias
 {
     /**
+     * The most characters an alias is built out of, before a language or a number is added.
+     *
+     * Joomla gives an alias 400 characters in the database and builds one out of the whole title
+     * without looking at its length, so an item whose title holds more than a title - a body that
+     * ended up in the wrong column, a question asked at length - produces an alias the database
+     * refuses to store, and the translation is lost over it. A hundred is far inside that, leaves
+     * room for everything added after it, and is about as much as a URL wants in one segment.
+     *
+     * @var    integer
+     * @since  1.4.4
+     */
+    public const MAX_LENGTH = 100;
+
+    /**
      * Pick the first alias the draft's neighbours leave free.
      *
      * @param   string    $base      The alias the draft's own title gives it.
@@ -41,6 +55,7 @@ final class DraftAlias
      */
     public static function pick(string $base, string $language, array $taken): string
     {
+        $base = self::shortened($base);
         $held = [];
 
         foreach ($taken as $alias) {
@@ -85,6 +100,34 @@ final class DraftAlias
      */
     public static function stepAside(string $base, string $language, int $sourceItemId): string
     {
-        return $base . '-' . strtolower($language) . '-' . $sourceItemId;
+        return self::shortened($base) . '-' . strtolower($language) . '-' . $sourceItemId;
+    }
+
+    /**
+     * Cut an alias back to a length the database will take, on a word.
+     *
+     * The cut lands on the last hyphen inside the limit, so the alias ends on a whole word rather
+     * than halfway through one. A first word longer than the limit has no hyphen to land on and is
+     * cut where the limit falls, which is still better than an alias that cannot be stored.
+     *
+     * @param   string  $base  The alias the draft's own title gives it.
+     *
+     * @return  string  The alias, at most MAX_LENGTH characters.
+     *
+     * @since   1.4.4
+     */
+    private static function shortened(string $base): string
+    {
+        if (mb_strlen($base) <= self::MAX_LENGTH) {
+            return $base;
+        }
+
+        $cut = mb_substr($base, 0, self::MAX_LENGTH);
+
+        // A hyphen is one byte and cannot sit inside a character, so the whole words are up to the
+        // last one of them. Trailing hyphens go with it, as Joomla does not leave an alias on one.
+        $lastWord = strrpos($cut, '-');
+
+        return rtrim($lastWord > 0 ? substr($cut, 0, $lastWord) : $cut, '-');
     }
 }

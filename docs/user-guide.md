@@ -207,6 +207,11 @@ A title Joomla cannot write in the URL alphabet at all, as it cannot for Persian
 the source item's alias with the language appended, rather than to the timestamp Joomla would
 use.
 
+An alias is also cut back to a hundred characters, on a word. Joomla builds one out of the whole
+title and gives it four hundred characters in the database, so an item carrying more than a title
+in its title field would otherwise produce an alias that cannot be stored at all, and the
+translation would be refused over it.
+
 Changing an alias by hand afterwards is fine, but translating the item again builds it from the
 title once more, as saving an item in Joomla with the alias field emptied does.
 
