@@ -104,11 +104,23 @@ extension (`["parent_id", "extension"]`), a tag's within its parent (`["parent_i
 producer reads the aliases held there and appends the language code, then a number, until
 it has one that is free.
 
-The language itself is left out of the scope, even for menu items, where Joomla does scope
-by it. A scope that holds more columns than Joomla's would let a save be refused after the
-translation has been paid for; one that holds fewer only makes an alias longer than it had
-to be. A type that names no columns leaves its alias to the managing component, which is
-what every type did before 1.4.2.
+`language` is a column like any other here, but it means what Joomla means by it: the
+draft's own language, and the items that apply to all of them. Only a type Joomla scopes
+that way names it, which among these is the menu item; for an article, a category or a tag
+the language is no part of the rule, and naming it would let a save be refused after the
+translation has been paid for. Leaving it out where Joomla does use it only makes an alias
+longer than it had to be, which for a menu item is the URL, so it is named there.
+
+A type that names no columns leaves its alias to the managing component, which is what
+every type did before 1.4.2.
+
+**`aliasReservedAtRoot`** (boolean, optional, default `false`) - whether an alias at the
+root of the tree is also kept off the names Joomla reserves there: `component`, and every
+folder in the site root. A menu item at the root answers a URL directly under the site, so
+Joomla refuses it those names, and every translated menu item is placed at the root. The
+words are ordinary ones - a menu item translated as "Media", "Plugins" or "Modules" lands
+on one - so they are counted as taken and the alias steps aside to `media-pt-pt` rather
+than being refused.
 
 **`context_associations`** (string, optional) - the `#__associations` context that ties
 the language versions of an item together, for example `com_content.item`. It is what
@@ -237,7 +249,8 @@ points at, so a translated menu item opens the translated page.
     "table": "#__menu",
     "context_associations": "com_menus.item",
     "draftCopyFields": ["link", "type", "component_id", "browserNav", "access", "img", "template_style_id", "params"],
-    "aliasScope": ["parent_id", "client_id"],
+    "aliasScope": ["parent_id", "client_id", "language"],
+    "aliasReservedAtRoot": true,
     "stateField": "published",
     "linkTargets": {
         "com_content.article": { "id": "com_content.article" },

@@ -35,6 +35,7 @@ use Joomla\Component\Translations\Administrator\Helper\TimeBudget;
 use Joomla\Component\Translations\Administrator\Helper\TranslatableValuesHelper;
 use Joomla\Database\ParameterType;
 use Joomla\Database\QueryInterface;
+use Joomla\Filesystem\Folder;
 use Joomla\Registry\Registry;
 
 /**
@@ -1061,11 +1062,16 @@ class TranslationModel extends BaseDatabaseModel
         }
 
         $fingerprint = TextChunker::fingerprint($strings);
-        $stored      = $this->loadPartial($stateId, $fingerprint);
-        $parts       = $stored['parts'];
-        $glossary    = $stored['glossary'];
-        $context     = TextChunker::documentContext($strings);
-        $sent        = false;
+        $stored = $this->loadPartial($stateId, $fingerprint);
+
+        // What an earlier run stored was never checked against the strings it was asked for, and a
+        // part that cannot belong to its source is reused on every attempt from then on: item 375
+        // on guide.joomla.org held a body under its title and failed identically each time it was
+        // tried. Dropping it here puts it back among the parts still to translate.
+        $parts    = StringTranslator::ofTheirSources(array_merge(...array_values($chunks)), $stored['parts']);
+        $glossary = $stored['glossary'];
+        $context  = TextChunker::documentContext($strings);
+        $sent     = false;
 
         foreach ($chunks as $chunk) {
             $missing = array_diff_key($chunk, $parts);
@@ -1469,7 +1475,10 @@ class TranslationModel extends BaseDatabaseModel
         $draft['alias'] = DraftAlias::pick(
             $base,
             $targetLanguage,
-            $this->neighbouringAliases($base, (string) ($properties['table'] ?? ''), $neighbours, (int) $draft['id'])
+            array_merge(
+                $this->neighbouringAliases($base, (string) ($properties['table'] ?? ''), $neighbours, (int) $draft['id']),
+                self::reservedAliases($draft, $properties)
+            )
         );
 
         if (!$model->save($draft)) {
@@ -1564,6 +1573,17 @@ class TranslationModel extends BaseDatabaseModel
 
         // bind() keeps a reference to what it is given, so each value is bound where it is held.
         foreach ($scopeValues as $column => $value) {
+            // A type that scopes by language is one Joomla scopes by language, and it reads an
+            // item applying to all languages as a neighbour of every one of them, as this does.
+            if ($column === 'language') {
+                $query->where(
+                    '(' . $db->quoteName('language') . ' = :language'
+                    . ' OR ' . $db->quoteName('language') . ' = ' . $db->quote('*') . ')'
+                )->bind(':language', $scopeValues['language'], ParameterType::STRING);
+
+                continue;
+            }
+
             $query->where($db->quoteName($column) . ' = :' . $column)
                 ->bind(
                     ':' . $column,
@@ -1613,6 +1633,36 @@ class TranslationModel extends BaseDatabaseModel
         }
 
         return $values;
+    }
+
+    /**
+     * The aliases a draft may not take for a reason other than a neighbour holding one.
+     *
+     * A menu item at the root of a site menu answers a URL directly under the site, so Joomla
+     * refuses it the name of any folder in the site root, and 'component', which it routes with.
+     * Every translated menu item is placed at the root, and the words are ordinary ones - a menu
+     * item translated as "Media", "Plugins" or "Modules" lands on one - so without this the save
+     * is refused and the draft falls back to an alias carrying the item's id. Counting them as
+     * taken instead gets "media-pt-pt", which reads like the rest.
+     *
+     * @param   array<string, mixed>  $draft       The draft's column values so far.
+     * @param   array<string, mixed>  $properties  The content type's properties from the map.
+     *
+     * @return  string[]  The aliases to treat as held.
+     *
+     * @since   1.4.5
+     */
+    private static function reservedAliases(array $draft, array $properties): array
+    {
+        // Only at the root of a site menu: deeper items sit under a path of their own, where the
+        // site's folders are no longer what the first segment of the URL could collide with.
+        if (empty($properties['aliasReservedAtRoot'])
+            || (int) ($draft['parent_id'] ?? 0) !== 1
+            || (int) ($draft['client_id'] ?? 0) !== 0) {
+            return [];
+        }
+
+        return array_merge(['component'], Folder::folders(JPATH_ROOT));
     }
 
     /**
