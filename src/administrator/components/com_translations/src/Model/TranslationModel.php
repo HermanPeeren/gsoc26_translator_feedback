@@ -1486,14 +1486,14 @@ class TranslationModel extends BaseDatabaseModel
             if (!$model->save($draft)) {
                 throw new \RuntimeException(
                     \sprintf(
-                        'Could not create the %s draft for item %d%s: as "%s" %s, and as "%s" %s',
+                        'Could not create the %s draft for item %d%s: %s (as "%s"), and %s (as "%s")',
                         $targetLanguage,
                         (int) $sourceItem['id'],
                         self::neighbourhoodNote($neighbours),
-                        $refused,
                         $refusal,
-                        $draft['alias'],
-                        self::saveRefusal($model)
+                        self::shortEnoughToRead($refused),
+                        self::saveRefusal($model),
+                        self::shortEnoughToRead((string) $draft['alias'])
                     )
                 );
             }
@@ -1613,6 +1613,24 @@ class TranslationModel extends BaseDatabaseModel
         }
 
         return $values;
+    }
+
+    /**
+     * Cut a value down to what a message can carry without losing what follows it.
+     *
+     * The queue's last_error and the task log hold 500 characters, and the reason a save was
+     * refused is the part worth having. An alias built out of a title that held a body filled all
+     * 500 on its own, so five failure mails from the guide named the alias and never said why.
+     *
+     * @param   string  $value  The value to put in a message.
+     *
+     * @return  string  The value, shortened with an ellipsis where it was cut.
+     *
+     * @since   1.4.4
+     */
+    private static function shortEnoughToRead(string $value): string
+    {
+        return mb_strlen($value) <= 60 ? $value : mb_substr($value, 0, 60) . '…';
     }
 
     /**
