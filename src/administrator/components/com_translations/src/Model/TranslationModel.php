@@ -1463,19 +1463,40 @@ class TranslationModel extends BaseDatabaseModel
         // last because the neighbours are the ones around where the draft ends up, which the fields
         // repointed above decide. A title that leaves no alias behind, as Persian does where Joomla
         // cannot transliterate it, falls back to the source's rather than to Joomla's timestamp.
-        $slug           = ApplicationHelper::stringURLSafe((string) ($fields['title'] ?? ''), $targetLanguage);
-        $base           = $slug !== '' ? $slug : (string) $sourceItem['alias'];
-        $draft['alias'] = DraftAlias::pick($base, $targetLanguage, $this->neighbouringAliases($base, $draft, $sourceItem, $properties));
+        $slug        = ApplicationHelper::stringURLSafe((string) ($fields['title'] ?? ''), $targetLanguage);
+        $base        = $slug !== '' ? $slug : (string) $sourceItem['alias'];
+        $neighbours  = self::aliasScopeValues($draft, $sourceItem, $properties);
+        $draft['alias'] = DraftAlias::pick(
+            $base,
+            $targetLanguage,
+            $this->neighbouringAliases($base, (string) ($properties['table'] ?? ''), $neighbours, (int) $draft['id'])
+        );
 
         if (!$model->save($draft)) {
-            throw new \RuntimeException(
-                \sprintf(
-                    'Could not create the %s draft for item %d: %s',
-                    $targetLanguage,
-                    (int) $sourceItem['id'],
-                    self::saveRefusal($model)
-                )
-            );
+            // Joomla decides whether an alias is free, and says so only by refusing the save. Where
+            // it refuses one the neighbours read above left free, it is reading a neighbourhood we
+            // are not, so the draft steps aside to an alias carrying the id of the item it was
+            // translated from - which no other item's draft can reach - and asks a second time.
+            // Losing a translation that has been paid for over a name is the worse outcome, and a
+            // refusal for any other reason simply repeats itself, which the message then says.
+            $refused        = $draft['alias'];
+            $refusal        = self::saveRefusal($model);
+            $draft['alias'] = DraftAlias::stepAside($base, $targetLanguage, (int) $sourceItem['id']);
+
+            if (!$model->save($draft)) {
+                throw new \RuntimeException(
+                    \sprintf(
+                        'Could not create the %s draft for item %d%s: as "%s" %s, and as "%s" %s',
+                        $targetLanguage,
+                        (int) $sourceItem['id'],
+                        self::neighbourhoodNote($neighbours),
+                        $refused,
+                        $refusal,
+                        $draft['alias'],
+                        self::saveRefusal($model)
+                    )
+                );
+            }
         }
 
         $draftId = (int) $model->getState($model->getName() . '.id');
@@ -1520,21 +1541,18 @@ class TranslationModel extends BaseDatabaseModel
      * is left out so that a re-translation keeps the alias it already has. A content type whose
      * entry names no columns gets no aliases back and keeps the one its title gives it.
      *
-     * @param   string                $base        The alias the draft's title gives it, which its neighbours are read around.
-     * @param   array<string, mixed>  $draft       The draft's column values so far.
-     * @param   array<string, mixed>  $sourceItem  The source item's column values, for what the draft does not carry.
-     * @param   array<string, mixed>  $properties  The content type's properties from the map.
+     * @param   string                $base         The alias the draft's title gives it, which its neighbours are read around.
+     * @param   string                $table        The content type's database table.
+     * @param   array<string, mixed>  $scopeValues  The values that decide who the neighbours are, keyed by column.
+     * @param   int                   $draftId      The id of the row the draft updates, or 0 for a new one.
      *
      * @return  string[]  The aliases the draft's neighbours hold.
      *
      * @since   1.4.2
      */
-    private function neighbouringAliases(string $base, array $draft, array $sourceItem, array $properties): array
+    private function neighbouringAliases(string $base, string $table, array $scopeValues, int $draftId): array
     {
-        $scope = (array) ($properties['aliasScope'] ?? []);
-        $table = (string) ($properties['table'] ?? '');
-
-        if ($scope === [] || $table === '' || $base === '') {
+        if ($scopeValues === [] || $table === '' || $base === '') {
             return [];
         }
 
@@ -1544,27 +1562,15 @@ class TranslationModel extends BaseDatabaseModel
             ->from($db->quoteName($table))
             ->where($db->quoteName('alias') . ' LIKE ' . $db->quote($db->escape($base, true) . '%', false));
 
-        // Each value needs a variable of its own: bind() keeps a reference to what it is given.
-        $values = [];
-
-        foreach ($scope as $column) {
-            $column = (string) $column;
-
-            if (!isset($draft[$column]) && !isset($sourceItem[$column])) {
-                continue;
-            }
-
-            $values[$column] = $draft[$column] ?? $sourceItem[$column];
-
+        // bind() keeps a reference to what it is given, so each value is bound where it is held.
+        foreach ($scopeValues as $column => $value) {
             $query->where($db->quoteName($column) . ' = :' . $column)
                 ->bind(
                     ':' . $column,
-                    $values[$column],
-                    is_numeric($values[$column]) ? ParameterType::INTEGER : ParameterType::STRING
+                    $scopeValues[$column],
+                    is_numeric($value) ? ParameterType::INTEGER : ParameterType::STRING
                 );
         }
-
-        $draftId = (int) ($draft['id'] ?? 0);
 
         if ($draftId > 0) {
             $query->where($db->quoteName('id') . ' != :draftId')
@@ -1574,6 +1580,63 @@ class TranslationModel extends BaseDatabaseModel
         $db->setQuery($query);
 
         return array_map('strval', (array) $db->loadColumn());
+    }
+
+    /**
+     * The values that decide who a draft's neighbours are.
+     *
+     * The map names the columns per content type; a draft carries most of them itself, and what it
+     * does not carry it shares with its source. A column neither of them holds is left out, which
+     * widens the neighbourhood rather than narrowing it: reading too many aliases only makes the
+     * one that is picked longer, while reading too few is what lets a save be refused.
+     *
+     * @param   array<string, mixed>  $draft       The draft's column values so far.
+     * @param   array<string, mixed>  $sourceItem  The source item's column values.
+     * @param   array<string, mixed>  $properties  The content type's properties from the map.
+     *
+     * @return  array<string, mixed>  The values, keyed by column.
+     *
+     * @since   1.4.3
+     */
+    private static function aliasScopeValues(array $draft, array $sourceItem, array $properties): array
+    {
+        $values = [];
+
+        foreach ((array) ($properties['aliasScope'] ?? []) as $column) {
+            $column = (string) $column;
+
+            if (isset($draft[$column])) {
+                $values[$column] = $draft[$column];
+            } elseif (isset($sourceItem[$column])) {
+                $values[$column] = $sourceItem[$column];
+            }
+        }
+
+        return $values;
+    }
+
+    /**
+     * Where a draft was being saved, for a message about why it could not be.
+     *
+     * A refused alias says little without the neighbourhood it was refused in: the same alias is
+     * free in one category and taken in the next, and which category a draft lands in depends on
+     * whether the source's category has been translated yet.
+     *
+     * @param   array<string, mixed>  $scopeValues  The values that decide who the neighbours are, keyed by column.
+     *
+     * @return  string  The neighbourhood in brackets, or nothing when the type has no alias scope.
+     *
+     * @since   1.4.3
+     */
+    private static function neighbourhoodNote(array $scopeValues): string
+    {
+        $named = [];
+
+        foreach ($scopeValues as $column => $value) {
+            $named[] = $column . ' ' . $value;
+        }
+
+        return $named === [] ? '' : ' (' . implode(', ', $named) . ')';
     }
 
     /**

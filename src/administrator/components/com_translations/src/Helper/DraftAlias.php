@@ -64,4 +64,27 @@ final class DraftAlias
 
         return $candidate;
     }
+
+    /**
+     * The alias to fall back on when the managing component refuses the picked one anyway.
+     *
+     * Joomla decides what an alias clashes with, and it answers only by refusing a save. Where it
+     * refuses one that the neighbours read beforehand left free, it is reading a neighbourhood the
+     * component is not, and arguing with it costs a translation that has been paid for. This names
+     * the source item the draft was made from, so two drafts can only reach the same alias if they
+     * were translated from the same item into the same language, which is the one case the queue
+     * does not produce twice.
+     *
+     * @param   string   $base          The alias the draft's own title gives it.
+     * @param   string   $language      The draft's language code, e.g. 'pt-BR'.
+     * @param   integer  $sourceItemId  The id of the item the draft was translated from.
+     *
+     * @return  string  An alias tied to the source item.
+     *
+     * @since   1.4.3
+     */
+    public static function stepAside(string $base, string $language, int $sourceItemId): string
+    {
+        return $base . '-' . strtolower($language) . '-' . $sourceItemId;
+    }
 }

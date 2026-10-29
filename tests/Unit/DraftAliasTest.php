@@ -135,6 +135,44 @@ final class DraftAliasTest extends TestCase
     }
 
     /**
+     * The alias fallen back on names the item the draft was translated from.
+     *
+     * Two drafts reach it only when they were translated from the same item into the same
+     * language, which is the one thing the queue does not ask for twice.
+     *
+     * @return  void
+     *
+     * @since   1.4.3
+     */
+    public function testTheAliasSteppedAsideToNamesTheSourceItem(): void
+    {
+        $this->assertSame('referencia-pt-pt-587', DraftAlias::stepAside('referencia', 'pt-PT', 587));
+    }
+
+    /**
+     * Stepping aside reaches past the aliases picking would have produced.
+     *
+     * It is used when the component refused an alias that was picked as free, so landing on one
+     * that picking could also have produced would ask the same question twice.
+     *
+     * @return  void
+     *
+     * @since   1.4.3
+     */
+    public function testSteppingAsideLandsPastThePickedAliases(): void
+    {
+        $aside = DraftAlias::stepAside('referencia', 'pt-PT', 587);
+        $taken = ['referencia', 'referencia-pt-pt'];
+
+        for ($number = 2; $number <= 20; $number++) {
+            $taken[] = 'referencia-pt-pt-' . $number;
+        }
+
+        $this->assertNotContains($aside, $taken);
+        $this->assertNotSame($aside, DraftAlias::pick('referencia', 'pt-PT', $taken));
+    }
+
+    /**
      * An alias that only starts the same is a neighbour like any other, not a clash.
      *
      * @return  void
