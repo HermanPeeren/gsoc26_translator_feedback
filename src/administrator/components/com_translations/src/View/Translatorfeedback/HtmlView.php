@@ -21,6 +21,7 @@ use Joomla\CMS\Helper\ContentHelper;
 use Joomla\CMS\Language\Text;
 use Joomla\CMS\MVC\View\HtmlView as BaseHtmlView;
 use Joomla\CMS\Toolbar\ToolbarHelper;
+use Joomla\Component\Translations\Administrator\Helper\LanguageDirection;
 
 /**
  * Side-by-side translation feedback view.
@@ -57,6 +58,14 @@ class HtmlView extends BaseHtmlView
     public $isSite = false;
 
     /**
+     * The writing direction of the source language ('ltr' or 'rtl'), or '' when it names no language.
+     *
+     * @var    string
+     * @since  1.4.6
+     */
+    public $sourceDirection = '';
+
+    /**
      * Render the view.
      *
      * @param   string  $tpl  The template name.
@@ -73,6 +82,13 @@ class HtmlView extends BaseHtmlView
         $this->form = $model->getForm();
 
         $this->isSite = Factory::getApplication()->isClient('site');
+
+        // The page runs in the translator's language, so an original in a language written the
+        // other way says its own direction. Either client's language pack may describe it.
+        $this->sourceDirection = LanguageDirection::of(
+            (string) $this->item->source_language,
+            [JPATH_SITE, JPATH_ADMINISTRATOR]
+        );
 
         // The editing form needs the validator so the Save button can submit, plus keepalive.
         // The stylesheet caps the read-only original pane so a long source scrolls beside the editor.

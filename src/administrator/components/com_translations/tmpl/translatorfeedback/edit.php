@@ -29,6 +29,12 @@ $contentType    = (string) $this->item->content_type;
 $targetLanguage = (string) $this->item->target_language;
 $sourceLanguage = (string) $this->item->source_language;
 
+// The original's values carry their own language and direction, which the page (in the translator's
+// language) may not share: an English original stays left to right on a right-to-left page.
+$sourceAttributes = $this->sourceDirection !== ''
+    ? ' lang="' . $this->escape($sourceLanguage) . '" dir="' . $this->sourceDirection . '"'
+    : '';
+
 // Render a read-only original body, falling back to a muted placeholder when the source field is empty.
 // Links and images are stored relative to the site root, so resolve them from there.
 $originalBody = function ($html) {
@@ -50,7 +56,7 @@ $originalText = function ($value) {
 
 // Render one paired field row: the read-only source value beside its editable translation.
 // An editor field shows its body as a card; a textarea gets a taller source box to match its input.
-$fieldRow = function ($field, $sourceValue, $input, $fill = false) use ($originalBody, $originalText, $hasTranslation) {
+$fieldRow = function ($field, $sourceValue, $input, $fill = false) use ($originalBody, $originalText, $hasTranslation, $sourceAttributes) {
     $type  = strtolower((string) $field->getAttribute('type'));
     $label = Text::_((string) $field->getAttribute('label'));
 
@@ -59,6 +65,9 @@ $fieldRow = function ($field, $sourceValue, $input, $fill = false) use ($origina
     if ($field->required) {
         $label .= '<span class="star" aria-hidden="true">&#160;*</span>';
     }
+
+    // The placeholder for an empty value is in the page's language, so only a value is marked as the original's.
+    $valueAttributes = trim((string) $sourceValue) !== '' ? $sourceAttributes : '';
 
     if ($type === 'editor') {
         ?>
@@ -71,7 +80,7 @@ $fieldRow = function ($field, $sourceValue, $input, $fill = false) use ($origina
                             <span class="icon-lock opacity-75 me-2" aria-hidden="true"></span><?php echo $label; ?>
                         </div>
                         <?php // Body is trusted, author-supplied HTML (rendered as the managing component does). ?>
-                        <div class="card-body bg-body-tertiary <?php echo $fill ? 'translations-readonly-fill' : 'translations-readonly-body'; ?><?php echo trim((string) $sourceValue) === '' ? ' translations-readonly-empty' : ''; ?>"><?php echo $originalBody($sourceValue); ?></div>
+                        <div class="card-body bg-body-tertiary translations-source <?php echo $fill ? 'translations-readonly-fill' : 'translations-readonly-body'; ?><?php echo trim((string) $sourceValue) === '' ? ' translations-readonly-empty' : ''; ?>"<?php echo $valueAttributes; ?>><?php echo $originalBody($sourceValue); ?></div>
                     </div>
                 </div>
                 <div class="col-lg-6">
@@ -92,7 +101,7 @@ $fieldRow = function ($field, $sourceValue, $input, $fill = false) use ($origina
         <label class="fw-bold d-block mb-2"><?php echo $label; ?></label>
         <div class="row">
             <div class="col-lg-6">
-                <div class="form-control-plaintext border rounded bg-body-tertiary px-3 py-2<?php echo $sourceClass !== '' ? ' ' . $sourceClass : ''; ?>"><?php echo $originalText($sourceValue); ?></div>
+                <div class="form-control-plaintext border rounded bg-body-tertiary px-3 py-2 translations-source<?php echo $sourceClass !== '' ? ' ' . $sourceClass : ''; ?>"<?php echo $valueAttributes; ?>><?php echo $originalText($sourceValue); ?></div>
             </div>
             <div class="col-lg-6">
                 <?php if ($hasTranslation) : ?>

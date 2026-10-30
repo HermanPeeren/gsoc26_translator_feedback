@@ -29,6 +29,11 @@
     overflow-y: auto;
 }
 
+/* The original carries its own dir; align it to that rather than to whatever the page aligns its text to. */
+.translations-source {
+    text-align: start;
+}
+
 /* Centre the placeholder when the source body is empty so the fixed-height card does not read as a void. */
 .translations-readonly-empty {
     display: flex;
