@@ -7,12 +7,11 @@
         <element>pkg_translations</element>
         <type>package</type>
         <client>site</client>
-        <version>1.4.5</version>
+        <version>1.4.6</version>
         <infourl title="Translator Feedback">https://github.com/joomla-projects/gsoc26_translator_feedback</infourl>
         <downloads>
-            <downloadurl type="full" format="zip">https://github.com/joomla-projects/gsoc26_translator_feedback/releases/download/v1.4.5/pkg_translations-1.4.5.zip</downloadurl>
+            <downloadurl type="full" format="zip">https://github.com/joomla-projects/gsoc26_translator_feedback/releases/download/v1.4.6/pkg_translations-1.4.6.zip</downloadurl>
         </downloads>
-        <sha512>3ad5a774412aaddf4e2844ec8d45a0b3499f4d214664de5c7257cf2e0111e544dd6833624869dd300fdad9285f5a4cd1c185867e718f84306d41a9427f70681a</sha512>
         <tags>
             <tag>stable</tag>
         </tags>
