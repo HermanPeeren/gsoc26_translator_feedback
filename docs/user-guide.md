@@ -163,6 +163,11 @@ field. Each content type shows the fields it can translate (for an article: titl
 and full text, meta description and keywords, note, and the image alt text and captions),
 together with any translatable custom fields the item has.
 
+The page follows your administrator language, so working in a right-to-left language such as
+Arabic gives a right-to-left page and editor. The original keeps its own direction: an English
+source still reads left to right beside it. Its direction comes from the source language's
+language pack, or, where no pack for it is installed, from its language code.
+
 Correct whatever is wrong, then choose one of:
 
 - **Save** or **Save & Close** keeps your changes on the draft. The translation stays in
