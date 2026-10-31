@@ -25,6 +25,7 @@ use Joomla\CMS\Plugin\PluginHelper;
 use Joomla\Component\Fields\Administrator\Helper\FieldsHelper;
 use Joomla\Component\Fields\Administrator\Model\FieldModel;
 use Joomla\Component\Translations\Administrator\Helper\ContentTypesHelper;
+use Joomla\Component\Translations\Administrator\Helper\DatabaseConnection;
 use Joomla\Component\Translations\Administrator\Helper\DraftAlias;
 use Joomla\Component\Translations\Administrator\Helper\RuleRetriever;
 use Joomla\Component\Translations\Administrator\Helper\RunLock;
@@ -1000,15 +1001,21 @@ class TranslationModel extends BaseDatabaseModel
             $targetLanguage
         );
 
-        return StringTranslator::translateInDocument(
-            $dispatcher,
-            $strings,
-            $sourceLanguage,
-            $targetLanguage,
-            $rules,
-            $documentContext,
-            $glossary
-        );
+        try {
+            return StringTranslator::translateInDocument(
+                $dispatcher,
+                $strings,
+                $sourceLanguage,
+                $targetLanguage,
+                $rules,
+                $documentContext,
+                $glossary
+            );
+        } finally {
+            // A long answer can outlast the server's patience with an idle connection, and what
+            // follows - storing the answer, or the failure - needs the database.
+            DatabaseConnection::reconnectIfDropped($this->getDatabase());
+        }
     }
 
     /**
