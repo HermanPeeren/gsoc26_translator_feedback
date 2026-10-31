@@ -21,6 +21,7 @@
       "Joomla\\Plugin\\Content\\Translations\\": "src/plugins/content/translations/src/",
       "Joomla\\Plugin\\Rag\\Claude\\": "src/plugins/rag/claude/src/",
       "Joomla\\Plugin\\Task\\TranslationsDistiller\\": "src/plugins/task/translationsdistiller/src/",
+      "Joomla\\Plugin\\Task\\TranslationsLanguageFiles\\": "src/plugins/task/translationslanguagefiles/src/",
       "Joomla\\Plugin\\Task\\TranslationsSeed\\": "src/plugins/task/translationsseed/src/",
       "Joomla\\Plugin\\Task\\TranslationsTranslate\\": "src/plugins/task/translationstranslate/src/",
       "Joomla\\Plugin\\Translation\\Claude\\": "src/plugins/translation/claude/src/"
@@ -30,7 +31,8 @@
     "test": "phpunit",
     "build": [
       "php build/build.php",
-      "php build/build.php seed"
+      "php build/build.php seed",
+      "php build/build.php languagefiles"
     ],
     "update-xml": "php build/update-xml.php",
     "analyse": "phpstan analyse"

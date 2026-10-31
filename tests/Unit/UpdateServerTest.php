@@ -48,13 +48,17 @@ final class UpdateServerTest extends TestCase
     public static function releasedExtensions(): array
     {
         return [
-            'the package'     => [
+            'the package'               => [
                 'src/administrator/manifests/packages/pkg_translations.xml',
                 'updates/pkg_translations.xml',
             ],
-            'the seed plugin' => [
+            'the seed plugin'           => [
                 'src/plugins/task/translationsseed/translationsseed.xml',
                 'updates/plg_task_translationsseed.xml',
+            ],
+            'the language files plugin' => [
+                'src/plugins/task/translationslanguagefiles/translationslanguagefiles.xml',
+                'updates/plg_task_translationslanguagefiles.xml',
             ],
         ];
     }

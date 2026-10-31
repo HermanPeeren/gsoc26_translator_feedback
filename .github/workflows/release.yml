@@ -34,7 +34,8 @@ jobs:
           TAG="${GITHUB_REF_NAME#v}"
           MANIFEST=$(php -r 'echo trim((string) simplexml_load_file("src/administrator/manifests/packages/pkg_translations.xml")->version);')
           SEED=$(php -r 'echo trim((string) simplexml_load_file("src/plugins/task/translationsseed/translationsseed.xml")->version);')
-          echo "tag: $TAG   package: $MANIFEST   seed plugin: $SEED"
+          FILES=$(php -r 'echo trim((string) simplexml_load_file("src/plugins/task/translationslanguagefiles/translationslanguagefiles.xml")->version);')
+          echo "tag: $TAG   package: $MANIFEST   seed plugin: $SEED   language files plugin: $FILES"
           if [ "$TAG" != "$MANIFEST" ]; then
             echo "::error::Tag $GITHUB_REF_NAME does not match the package version $MANIFEST. Bump src/administrator/manifests/packages/pkg_translations.xml, or tag the version it already carries."
             exit 1
@@ -53,10 +54,11 @@ jobs:
       - name: Unit tests
         run: vendor/bin/phpunit
 
-      - name: Build the package and the seed plugin
+      - name: Build the package and the separately released plugins
         run: |
           php build/build.php
           php build/build.php seed
+          php build/build.php languagefiles
 
       - name: Publish the release
         env:
@@ -65,6 +67,7 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             build/pkg_translations-*.zip \
             build/plg_task_translationsseed-*.zip \
+            build/plg_task_translationslanguagefiles-*.zip \
             --title "Translator Feedback $GITHUB_REF_NAME" \
             --generate-notes
 

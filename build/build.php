@@ -3,15 +3,18 @@
 /**
  * Assembles the installable archives from src/.
  *
- * There are two of them, and they are released as two downloads:
+ * There are three of them, and they are released as three downloads:
  *
- *   php build/build.php          the package: the component and the five plugins that
- *                                make up the translation pipeline
- *   php build/build.php seed     plg_task_translationsseed on its own
+ *   php build/build.php                 the package: the component and the five plugins
+ *                                       that make up the translation pipeline
+ *   php build/build.php seed            plg_task_translationsseed on its own
+ *   php build/build.php languagefiles   plg_task_translationslanguagefiles on its own
  *
- * The seed plugin is not in the package because it is not part of the pipeline: it reads
- * an installed language pack once to give a site something to learn from, and a site that
- * does not want that should not have it installed.
+ * The two plugins are not in the package because they are not part of the pipeline. The
+ * seed plugin reads an installed language pack once to give a site something to learn from,
+ * and a site that does not want that should not have it installed. The language files plugin
+ * translates the package's own language files, which only the site the project makes them on
+ * needs to do.
  *
  * What goes into the package is read from pkg_translations.xml rather than listed here, so
  * adding an extension to the package is one line in the manifest. The version comes from
@@ -35,10 +38,13 @@ require_once __DIR__ . '/archive.php';
 const ROOT   = __DIR__ . '/..';
 const SOURCE = ROOT . '/src';
 
-// Where the seed plugin lives, and what its archive is called. It is the one extension
-// this script knows by name, because it is the one that is released on its own.
-const SEED_PLUGIN = 'src/plugins/task/translationsseed';
-const SEED_NAME   = 'plg_task_translationsseed';
+// The plugins released on their own, by build target: where each lives and what its archive
+// is called. They are the extensions this script knows by name, because they are not in the
+// package manifest.
+const SEPARATE_PLUGINS = [
+    'seed'          => ['src/plugins/task/translationsseed', 'plg_task_translationsseed'],
+    'languagefiles' => ['src/plugins/task/translationslanguagefiles', 'plg_task_translationslanguagefiles'],
+];
 
 /**
  * Report what cannot be built and stop.
@@ -292,22 +298,25 @@ function buildPackage(): void
 }
 
 /**
- * Build the seed plugin's own release.
+ * Build the own release of a plugin that is not in the package.
+ *
+ * @param   string  $directory  The plugin's folder, relative to the repository root.
+ * @param   string  $name       The plugin's name, which its archive is named after.
  *
  * @return  void
  */
-function buildSeed(): void
+function buildSeparatePlugin(string $directory, string $name): void
 {
-    $source  = ROOT . '/' . SEED_PLUGIN;
-    $version = version($source . '/translationsseed.xml');
+    $source  = ROOT . '/' . $directory;
+    $version = version($source . '/' . basename($directory) . '.xml');
 
-    removeOldArchives(SEED_NAME);
+    removeOldArchives($name);
 
-    $target = ROOT . '/build/' . archiveName(SEED_NAME, $version);
+    $target = ROOT . '/build/' . archiveName($name, $version);
 
     buildPlugin($source, $target);
 
-    report(SEED_NAME, $version, $target);
+    report($name, $version, $target);
 }
 
 /**
@@ -330,8 +339,10 @@ if (!\extension_loaded('zip')) {
 
 $target = $argv[1] ?? 'package';
 
-match ($target) {
-    'package' => buildPackage(),
-    'seed'    => buildSeed(),
-    default   => fail(\sprintf('Unknown target "%s". Use "package" (the default) or "seed".', $target)),
-};
+if ($target === 'package') {
+    buildPackage();
+} elseif (isset(SEPARATE_PLUGINS[$target])) {
+    buildSeparatePlugin(...SEPARATE_PLUGINS[$target]);
+} else {
+    fail(\sprintf('Unknown target "%s". Use "package" (the default), "%s".', $target, implode('" or "', array_keys(SEPARATE_PLUGINS))));
+}

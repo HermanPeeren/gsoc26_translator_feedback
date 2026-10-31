@@ -29,12 +29,15 @@ use SimpleXMLElement;
 final class PackageManifestTest extends TestCase
 {
     /**
-     * The seed plugin, which is released on its own rather than inside the package.
+     * The plugins released on their own rather than inside the package, with the build target of each.
      *
-     * @var    string
-     * @since  1.0.1
+     * @var    array<string, string>
+     * @since  1.4.9
      */
-    private const SEED_PLUGIN = 'task/translationsseed';
+    private const SEPARATE_PLUGINS = [
+        'task/translationsseed'          => 'seed',
+        'task/translationslanguagefiles' => 'languagefiles',
+    ];
 
     /**
      * Every extension the package lists is there to be built, under the name Joomla stores it.
@@ -70,7 +73,7 @@ final class PackageManifestTest extends TestCase
         $packaged = array_values(self::packagedExtensions());
 
         foreach (self::pluginsInTheTree() as $plugin) {
-            if ($plugin === self::SEED_PLUGIN) {
+            if (isset(self::SEPARATE_PLUGINS[$plugin])) {
                 continue;
             }
 
@@ -81,10 +84,12 @@ final class PackageManifestTest extends TestCase
             );
         }
 
-        $this->assertDirectoryExists(
-            self::src() . '/plugins/' . self::SEED_PLUGIN,
-            'The seed plugin is released on its own, and build/build.php seed builds it from here'
-        );
+        foreach (self::SEPARATE_PLUGINS as $plugin => $target) {
+            $this->assertDirectoryExists(
+                self::src() . '/plugins/' . $plugin,
+                \sprintf('The %s plugin is released on its own, and build/build.php %s builds it from here', $plugin, $target)
+            );
+        }
     }
 
     /**
@@ -102,7 +107,9 @@ final class PackageManifestTest extends TestCase
     {
         $manifests = [self::packageManifest()];
 
-        foreach (array_merge(array_values(self::packagedExtensions()), ['plugins/' . self::SEED_PLUGIN]) as $path) {
+        $separate = array_map(static fn(string $plugin): string => 'plugins/' . $plugin, array_keys(self::SEPARATE_PLUGINS));
+
+        foreach (array_merge(array_values(self::packagedExtensions()), $separate) as $path) {
             $manifests = array_merge($manifests, self::manifestsIn($path));
         }
 

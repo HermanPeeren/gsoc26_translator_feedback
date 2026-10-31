@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<form>
+	<fields name="params">
+		<fieldset name="task_params" addfieldprefix="Joomla\Plugin\Task\TranslationsLanguageFiles\Field">
+			<field
+				name="status"
+				type="languagefilesstatus"
+				label="PLG_TASK_TRANSLATIONSLANGUAGEFILES_STATUS_LABEL"
+			/>
+			<field
+				name="languages"
+				type="contentlanguage"
+				label="PLG_TASK_TRANSLATIONSLANGUAGEFILES_LANGUAGES_LABEL"
+				description="PLG_TASK_TRANSLATIONSLANGUAGEFILES_LANGUAGES_DESC"
+				layout="joomla.form.field.list-fancy-select"
+				multiple="true"
+			/>
+			<field
+				name="request_size"
+				type="number"
+				label="PLG_TASK_TRANSLATIONSLANGUAGEFILES_REQUEST_SIZE_LABEL"
+				description="PLG_TASK_TRANSLATIONSLANGUAGEFILES_REQUEST_SIZE_DESC"
+				required="true"
+				default="25"
+				min="1"
+				max="100"
+				step="1"
+				filter="int"
+			/>
+			<field
+				name="time_budget"
+				type="number"
+				label="PLG_TASK_TRANSLATIONSLANGUAGEFILES_TIME_BUDGET_LABEL"
+				description="PLG_TASK_TRANSLATIONSLANGUAGEFILES_TIME_BUDGET_DESC"
+				default="0"
+				min="0"
+				step="1"
+				filter="int"
+			/>
+		</fieldset>
+	</fields>
+</form>

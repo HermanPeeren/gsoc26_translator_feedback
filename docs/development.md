@@ -5,27 +5,32 @@ installation except the end-to-end tests.
 
 ## What is released
 
-There are **two downloads**, and they are built separately:
+There are **three downloads**, and they are built separately:
 
 | Download | What is in it |
 | --- | --- |
 | `pkg_translations-<version>.zip` | The component and the five plugins of the translation pipeline: `content/translations`, `translation/claude`, `rag/claude`, `task/translationsdistiller`, `task/translationstranslate`. |
 | `plg_task_translationsseed-<version>.zip` | The seed plugin on its own. |
+| `plg_task_translationslanguagefiles-<version>.zip` | The language files plugin on its own. |
 
-The seed plugin stays out of the package because it is not part of the pipeline: it reads
-an installed language pack once to give a site something to learn from before anyone has
-corrected anything, and a site that does not want that should not have it installed at all.
+The two plugins stay out of the package because they are not part of the pipeline. The seed
+plugin reads an installed language pack once to give a site something to learn from before
+anyone has corrected anything, and a site that does not want that should not have it installed
+at all. The language files plugin translates this package's own language files (see
+[Translating the package's language files](#translating-the-packages-language-files)), which
+only the site the project makes them on needs.
 
 ## Building
 
 ```
-php build/build.php          # the package
-php build/build.php seed     # the seed plugin
+php build/build.php                 # the package
+php build/build.php seed            # the seed plugin
+php build/build.php languagefiles   # the language files plugin
 ```
 
-Both write into `build/`, which is git-ignored apart from the scripts themselves. Each run
-clears the archives an earlier version of the same extension left there, because the release
-workflow uploads `build/<extension>-*.zip` and would otherwise publish both.
+All of them write into `build/`, which is git-ignored apart from the scripts themselves. Each
+run clears the archives an earlier version of the same extension left there, because the
+release workflow uploads `build/<extension>-*.zip` and would otherwise publish both.
 
 What goes into the package is read from `pkg_translations.xml`, so adding an extension to
 the release is one `<file>` line in that manifest - the build works out where it lives from
@@ -36,13 +41,14 @@ refuses to publish a tag that disagrees with it.
 ## Update servers
 
 An installed site learns that a new version exists by asking the URL in its extension's
-`<updateservers>`. Both downloads have one, serving a file from `updates/` in this
+`<updateservers>`. Every download has one, serving a file from `updates/` in this
 repository:
 
 | Extension | Update file |
 | --- | --- |
 | `pkg_translations` | `updates/pkg_translations.xml` |
 | `plg_task_translationsseed` | `updates/plg_task_translationsseed.xml` |
+| `plg_task_translationslanguagefiles` | `updates/plg_task_translationslanguagefiles.xml` |
 
 Those files are **generated, not edited**:
 
@@ -58,9 +64,9 @@ disagree, and the release workflow runs the suite before it builds.
 A site remembers the update URL it was installed with, so moving those files cuts off the
 sites that already have them. They are meant to stay where they are.
 
-Both downloads are published on one release, tagged after the **package** version. That is
-why the seed plugin's download URL carries the package's version in its path and its own in
-its file name.
+All downloads are published on one release, tagged after the **package** version. That is
+why each plugin's download URL carries the package's version in its path and its own in its
+file name.
 
 The generated files declare `<targetplatform name="joomla" version="6\.[0-9]+"/>`. The
 package is developed and tested on Joomla 6; widen that pattern in `build/update-xml.php` if
@@ -137,7 +143,7 @@ afterwards, so they can be run repeatedly against the same site.
 ## Releasing
 
 A release is one tag. The workflow in the main repository reacts to a pushed `v*` tag by
-checking the tag against the package manifest, running the unit tests, building both
+checking the tag against the package manifest, running the unit tests, building the three
 archives and publishing them on the release.
 
 So: bump the version in the manifest of whatever changed, run `php build/update-xml.php`,
@@ -145,13 +151,46 @@ commit both, and tag `v<version>` matching `pkg_translations.xml`. The workflow 
 has to be committed before the tag is pushed, because GitHub reads a workflow from the
 commit the tag points at.
 
-The seed plugin carries its own version and is released under the same tag as a second
-download; the workflow says so in its log when the two differ.
+The seed plugin and the language files plugin each carry their own version and are released
+under the same tag as downloads of their own; the workflow logs all three versions.
 
-Once both downloads are published, the workflow writes their SHA-512 checksums into the update
+Once the downloads are published, the workflow writes their SHA-512 checksums into the update
 files with `php build/update-xml.php --checksum` and commits that to `main` itself. Joomla
 checks a downloaded update against that checksum, and warns when there is none. The checksum
 has to come from the workflow because a zip built on another machine has different timestamps
 and line endings, so its hash does not match. Pull `main` after a release, before the next
 version bump. Running `build/update-xml.php` without `--checksum` keeps a committed checksum
 while the download stays the same, and drops it when the version changes.
+
+## Translating the package's language files
+
+The package is written with en-GB language files, and translators should see it in their own
+language - for a right-to-left language the editor only works properly when the screens around
+it are in that language too. `plg_task_translationslanguagefiles` makes the other languages, on
+a site whose translation rules are worth using: guide.joomla.org, whose rules are mostly learned
+from the core language packs.
+
+1. Install the release's `plg_task_translationslanguagefiles-<version>.zip` on that site, next
+   to an up-to-date package and a configured translation plugin, and enable **Task - Translations
+   Language Files**.
+2. In **System, Manage, Scheduled Tasks**, create a **Translate Translator Feedback's Language
+   Files** task. **Languages** empty means every published content language except en-GB;
+   **Strings per Request** and **Time per Run** work as in the seed task. Let Web Cron run it, or
+   press **Run Test** until the log says nothing is left.
+3. Open the task and press **Download the Language Files**. It needs permission to manage
+   Scheduled Tasks.
+4. Unpack the archive into `src/`: every path in it is the path the file has here, such as
+   `plugins/task/translationsdistiller/language/ar-AA/plg_task_translationsdistiller.ini`. Its
+   `README.md` lists the `<language>` lines to add to each manifest - Joomla only installs the
+   language files a manifest names - and how complete each language is.
+
+The task reads the en-GB files the site has installed: the package's own, every extension
+installed with it, and the seed plugin's. It sends them through the component's own route - the
+published rules of the target language that apply to each batch, and the enabled translation
+plugin - with the language constant as context. Every answer is stored with a fingerprint of its
+English text, so after the site is updated to a new release, running the task again sends only
+the strings that are new or changed. A translation that loses a placeholder or an HTML tag is
+refused and retried in a smaller request, and set aside after three attempts; **Retry Failed
+Language File Strings** gives those new attempts, and **Forget Translated Language Files** makes
+the next run start a language from scratch, for instance after its rules have improved. A string
+not translated yet is written in English, so no screen shows a bare language constant.
