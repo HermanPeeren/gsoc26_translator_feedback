@@ -89,7 +89,9 @@
                 "com_tags.tag": { "id": "com_tags.tag" },
                 "com_tags.tags": { "parent_id": "com_tags.tag" }
             },
-            "draftForceFields": { "home": 0, "parent_id": 1 },
+            "associatedFields": { "parent_id": "com_menus.item" },
+            "associatedFieldsFallback": { "parent_id": 1 },
+            "draftForceFields": { "home": 0, "menuordering": 0 },
             "languageMenu": "menutype"
         }
     }

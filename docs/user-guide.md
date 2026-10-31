@@ -212,8 +212,12 @@ A title Joomla cannot write in the URL alphabet at all, as it cannot for Persian
 the source item's alias with the language appended, rather than to the timestamp Joomla would
 use.
 
-A translated menu item is placed at the root of its own language's menu, where Joomla keeps
-a few names for itself: `component`, and every folder in the site root. A menu item that
+A translated menu item is placed in its own language's menu, under the translation of its
+parent, and opens the translation of the page it points at. Where the parent or the page has no
+translation yet, the menu item waits at the root of the menu or points at the original, and it
+is moved under its parent, or pointed at the translated page, as soon as that is translated.
+
+At the root of a menu Joomla keeps a few names for itself: `component`, and every folder in the site root. A menu item that
 translates to one of those - "Media", "Plugins", "Modules" - takes the language-appended
 alias instead, as it would from any other alias already in use. Two languages may share a
 menu item alias, as Joomla allows, so a menu URL keeps the alias its own title gives it.

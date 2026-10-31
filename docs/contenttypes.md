@@ -117,7 +117,8 @@ every type did before 1.4.2.
 **`aliasReservedAtRoot`** (boolean, optional, default `false`) - whether an alias at the
 root of the tree is also kept off the names Joomla reserves there: `component`, and every
 folder in the site root. A menu item at the root answers a URL directly under the site, so
-Joomla refuses it those names, and every translated menu item is placed at the root. The
+Joomla refuses it those names, and a translated menu item is placed there whenever its source
+sits there or its source's parent has no translation yet. The
 words are ordinary ones - a menu item translated as "Media", "Plugins" or "Modules" lands
 on one - so they are counted as taken and the alias steps aside to `media-pt-pt` rather
 than being refused.
@@ -153,8 +154,10 @@ translate is never offered.
 
 **`draftForceFields`** (object, optional) - fields pinned to a fixed value on the draft,
 regardless of the source. Where `draftCopyFields` copies the source value, each entry
-here is `column: value`. A menu item uses `{ "home": 0, "parent_id": 1 }` so a
-translation never becomes the site's home page and is placed at the menu root.
+here is `column: value`, or a value the managing model reads beside the columns. A menu
+item uses `{ "home": 0, "menuordering": 0 }`: a translation never becomes the site's home
+page, and translating it again leaves it where it is among its siblings, where Joomla's
+menu item model would otherwise read an ordering that was never given.
 
 **`languageMenu`** (string, optional) - names the column holding the item's
 language-specific container. Menu items live in a per-language menu, so this is set to
@@ -184,6 +187,17 @@ draft's `catid` becomes that category's translation. The related type's
 `context_associations` and `table` are used to find the translation; when none exists yet,
 the source's value is kept.
 
+A field can point at the type's own items, as a menu item's `{ "parent_id": "com_menus.item" }`
+does: the translation is placed under the translation of its source's parent. When the parent is
+translated after the child, the child's translation is moved under it then, with an alias free
+among its new neighbours.
+
+**`associatedFieldsFallback`** (object, optional) - the value an `associatedFields` field takes
+while its related item has no translation yet, for a field whose source value cannot hold in the
+target language. A menu item's parent lives in the source language menu, so the menu item entry
+sets `{ "parent_id": 1 }`: the translation waits at the root of its menu until its parent is
+translated. A translation someone has moved elsewhere by hand in the meantime stays where it is.
+
 **`m2m_relation`** (object, optional) - many-to-many related items to re-point, mapping the
 data key written onto the draft to the related content type, for an article
 `{ "tags": "com_tags.tag" }`. The source's tag ids are remapped to their translations and
@@ -202,7 +216,9 @@ A view can carry more than one, as a category listing does with its category and
 a parameter can carry several ids, as the archived articles and tagged items views do. A parameter
 the link does not carry is skipped, and a link carrying none of them is left exactly as it is. An id
 of `0` is the root of a listing rather than an item, so it is left alone, and an id whose item has no
-translation yet keeps pointing at the source, as a foreign key does.
+translation yet keeps pointing at the source, as a foreign key does, until that item is
+translated: the target language's translated menu items still pointing at the source are then
+pointed at its translation.
 
 Only views whose ids name a content type in this map can be re-pointed. A contact or news feed
 category is a `#__categories` row belonging to another extension, which `limitToExtension` excludes,
@@ -237,8 +253,8 @@ category's tags are stored under `com_content.category`, so the category entry s
 
 ## Example: the menu item entry
 
-A menu item translates only its `title`. It is placed in the derived per-language menu at the root
-with `home` forced off, and `linkTargets` re-points its `link` at the translation of whatever it
+A menu item translates only its `title`. It is placed in the derived per-language menu under the
+translation of its parent, at the root while that has none, with `home` forced off, and `linkTargets` re-points its `link` at the translation of whatever it
 points at, so a translated menu item opens the translated page.
 
 ```json
@@ -260,7 +276,9 @@ points at, so a translated menu item opens the translated page.
         "com_tags.tag": { "id": "com_tags.tag" },
         "com_tags.tags": { "parent_id": "com_tags.tag" }
     },
-    "draftForceFields": { "home": 0, "parent_id": 1 },
+    "associatedFields": { "parent_id": "com_menus.item" },
+    "associatedFieldsFallback": { "parent_id": 1 },
+    "draftForceFields": { "home": 0, "menuordering": 0 },
     "languageMenu": "menutype"
 }
 ```

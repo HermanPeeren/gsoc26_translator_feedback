@@ -67,7 +67,9 @@ final class ContentTypesHelperTest extends TestCase
         $this->assertSame($mapped, $placed, 'Every mapped content type is ordered exactly once');
 
         foreach ($ordered as $position => $contentType) {
-            foreach (self::relatedTypes($contentType) as $relatedType) {
+            // A type pointing at its own items, as a menu item at its parent, cannot precede itself;
+            // the translation waits at its fallback and is moved once the parent is translated.
+            foreach (array_diff(self::relatedTypes($contentType), [$contentType]) as $relatedType) {
                 $this->assertLessThan(
                     $position,
                     array_search($relatedType, $ordered, true),
