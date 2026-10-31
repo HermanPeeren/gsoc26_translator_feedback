@@ -7,7 +7,7 @@
  *   php build/update-xml.php --checksum   also hash the archives in build/ (release workflow)
  *
  * Joomla asks the URL in each manifest's <updateservers> what the newest version is, and
- * downloads whatever the answer points at. That makes these two files part of the release
+ * downloads whatever the answer points at. That makes these files part of the release
  * rather than documentation of it: a stale one either hides a release or offers a download
  * that 404s, and neither shows up on the site that is missing the update.
  *
@@ -28,8 +28,8 @@ require_once __DIR__ . '/archive.php';
 
 const ROOT = __DIR__ . '/..';
 
-// Where the releases live. Both downloads are published on one release, tagged after the
-// package version, which is why the seed plugin's download URL below carries the package's
+// Where the releases live. All downloads are published on one release, tagged after the
+// package version, which is why each plugin's download URL below carries the package's
 // version in its path and its own in its file name.
 const REPOSITORY = 'https://github.com/joomla-projects/gsoc26_translator_feedback';
 
@@ -59,6 +59,7 @@ function manifestVersion(string $manifest): string
 
 $packageVersion = manifestVersion('src/administrator/manifests/packages/pkg_translations.xml');
 $seedVersion    = manifestVersion('src/plugins/task/translationsseed/translationsseed.xml');
+$filesVersion   = manifestVersion('src/plugins/task/translationslanguagefiles/translationslanguagefiles.xml');
 $tag            = 'v' . $packageVersion;
 
 /**
@@ -83,6 +84,15 @@ $updates = [
         'folder'      => 'task',
         'version'     => $seedVersion,
         'archive'     => archiveName('plg_task_translationsseed', $seedVersion),
+    ],
+    'plg_task_translationslanguagefiles' => [
+        'name'        => 'plg_task_translationslanguagefiles',
+        'description' => 'Translates the language files of Translator Feedback into the content languages',
+        'element'     => 'translationslanguagefiles',
+        'type'        => 'plugin',
+        'folder'      => 'task',
+        'version'     => $filesVersion,
+        'archive'     => archiveName('plg_task_translationslanguagefiles', $filesVersion),
     ],
 ];
 
@@ -192,7 +202,7 @@ foreach ($updates as $file => $update) {
     file_put_contents($target, $xml);
 
     printf(
-        "%-30s %s -> %s, %s\n",
+        "%-36s %s -> %s, %s\n",
         $file,
         $update['version'],
         $update['archive'],
