@@ -20,6 +20,7 @@ use Joomla\CMS\Log\Log;
 use Joomla\CMS\MVC\Model\BaseDatabaseModel;
 use Joomla\CMS\Plugin\PluginHelper;
 use Joomla\Component\Translations\Administrator\Event\DistilEvent;
+use Joomla\Component\Translations\Administrator\Helper\DatabaseConnection;
 use Joomla\Component\Translations\Administrator\Helper\RuleMerger;
 use Joomla\Component\Translations\Administrator\Helper\RuleRetriever;
 use Joomla\Component\Translations\Administrator\Helper\RunLock;
@@ -924,7 +925,13 @@ class DistillerModel extends BaseDatabaseModel
             'sourceLanguage' => $sourceLanguage,
             'targetLanguage' => $targetLanguage,
         ]);
-        $dispatcher->dispatch('onDistil', $event);
+        try {
+            $dispatcher->dispatch('onDistil', $event);
+        } finally {
+            // A long answer can outlast the server's patience with an idle connection, and the
+            // rules distilled from it are stored next.
+            DatabaseConnection::reconnectIfDropped($this->getDatabase());
+        }
 
         // The first provider that answered wins, even when it distilled nothing.
         foreach ((array) $event->getArgument('result', []) as $providerResult) {
