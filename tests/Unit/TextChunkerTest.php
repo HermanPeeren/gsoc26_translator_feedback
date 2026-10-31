@@ -420,6 +420,33 @@ final class TextChunkerTest extends TestCase
     }
 
     /**
+     * The print of an item's parts changes when the same text is cut in other places.
+     *
+     * The parts of a cut value are numbered the same however it is cut, so a part stored before
+     * the size or the cutting changed would be joined in as the translation of a different stretch
+     * of text. The cross-reference article on guide.joomla.org had its first part stored when the
+     * chunker that would cut the rest of it differently was deployed.
+     *
+     * @return  void
+     *
+     * @since   1.4.10
+     */
+    public function testThePrintOfThePartsChangesWithTheCut(): void
+    {
+        $strings = ['fulltext' => self::article(60)];
+
+        $this->assertNotSame(
+            TextChunker::fingerprint(TextChunker::parts($strings, 1000)),
+            TextChunker::fingerprint(TextChunker::parts($strings, 2000))
+        );
+        $this->assertSame(
+            TextChunker::fingerprint(TextChunker::parts($strings, 1000)),
+            TextChunker::fingerprint(array_merge(...TextChunker::plan($strings, 1000))),
+            'The planned requests hold the same parts'
+        );
+    }
+
+    /**
      * An article of the given number of sections, in the shape the guide's pages have.
      *
      * @param   integer  $sections  The number of sections.

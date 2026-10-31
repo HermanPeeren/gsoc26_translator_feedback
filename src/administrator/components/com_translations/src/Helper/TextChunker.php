@@ -354,7 +354,9 @@ final class TextChunker
      * the text being translated now.
      *
      * A source edited between two runs is cut differently, so the parts of the run before it no
-     * longer line up and have to be thrown away rather than joined onto new ones.
+     * longer line up and have to be thrown away rather than joined onto new ones. Given an item's
+     * planned parts rather than its strings, the print also changes when the same text is cut in
+     * other places.
      *
      * @param   array  $strings  The item's source strings keyed by field.
      *

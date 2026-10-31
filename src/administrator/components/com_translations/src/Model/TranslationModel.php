@@ -1068,7 +1068,11 @@ class TranslationModel extends BaseDatabaseModel
             }
         }
 
-        $fingerprint = TextChunker::fingerprint($strings);
+        // The print is of the parts rather than of the strings: the same text cut in other places -
+        // after a new Characters per Request, or a chunker that finds boundaries it did not before -
+        // numbers its parts the same, and a part stored under one cut is no translation of the
+        // part that has its key under the other.
+        $fingerprint = TextChunker::fingerprint(array_merge(...array_values($chunks)));
         $stored = $this->loadPartial($stateId, $fingerprint);
 
         // What an earlier run stored was never checked against the strings it was asked for, and a
