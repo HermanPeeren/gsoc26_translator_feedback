@@ -134,9 +134,10 @@ What this means for a plugin:
 - **Keys can name a part of a field.** A field that had to be cut arrives as
   `fulltext#1`, `fulltext#2` and so on. A plugin does not need to know that: return the
   keys it received, as always, and the component joins the parts back together.
-- **A value can be an HTML fragment.** Cuts are only made between a `>` and a `<`, so no
-  tag and no word is ever split, but a part can still begin or end inside a list, a table
-  or a section. Translate it as the fragment it is: do not open, close or add tags, and do
+- **A value can be an HTML fragment.** Cuts are only made between a `>` and a `<` (with
+  at most white space between them), at the end of a sentence or at a line break, so no tag
+  and no word is ever split, but a part can still begin or end inside a list, a table, a code
+  sample or a section. Translate it as the fragment it is: do not open, close or add tags, and do
   not finish a sentence that runs on into the next part. The parts are concatenated exactly
   as they come back, so anything added shows up in the middle of the article.
 - **Each part is its own request.** Keeping a word translated the same way through the

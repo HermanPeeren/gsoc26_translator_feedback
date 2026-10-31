@@ -400,8 +400,9 @@ The component therefore translates a long article in parts, and carries on by it
 - The article is cut into parts of about **Characters per Request** characters (Options, 4000
   by default). Cuts are only made between two HTML tags, so no tag and no word is ever split,
   and the shallowest boundary near that size is preferred, so a part tends to end at a
-  paragraph or a heading. Where a stretch has no boundary in it at all - a long code sample -
-  the size is overshot rather than cutting through it.
+  paragraph, a heading or a table row. Where a stretch holds no tags, it is cut at the end of
+  a sentence or, in a code sample, at a line break. Only a stretch with none of these in it -
+  a single very long line - is left whole and makes the size overshoot.
 - Each part is a request of its own, and every answered request is kept before the next is
   sent. A run that uses up its **Time per Run** stops between parts and asks to run again; the
   next run carries on with the parts that are left. Nothing is paid for twice.

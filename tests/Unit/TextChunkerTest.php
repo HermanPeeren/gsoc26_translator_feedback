@@ -117,6 +117,66 @@ final class TextChunkerTest extends TestCase
     }
 
     /**
+     * Tags with a line break between them are cut between, as tags next to each other are.
+     *
+     * The editor writes a line break between table rows, cells and other block elements, so in a
+     * saved article a '>' is mostly followed by white space before the next '<'. The "Mail
+     * Templates Tags Cross-Reference" article on guide.joomla.org is one table of some 50,000
+     * characters with a single sentence end in it: it went out as one request, whose answer was
+     * cut off on every attempt until the item was set aside.
+     *
+     * @return  void
+     *
+     * @since   1.4.10
+     */
+    public function testTagsOnLinesOfTheirOwnAreCutBetween(): void
+    {
+        $table = self::crossReferenceTable(300);
+        $parts = TextChunker::split($table, 4000);
+
+        $this->assertGreaterThan(1, \count($parts), 'A table far over the size is cut');
+        $this->assertSame($table, TextChunker::join($parts));
+
+        foreach ($parts as $index => $part) {
+            $this->assertLessThanOrEqual(4000, \strlen($part), \sprintf('Part %d keeps to the size', $index + 1));
+        }
+
+        foreach (\array_slice($parts, 1) as $index => $part) {
+            $this->assertStringStartsWith('<tr', $part, \sprintf('Part %d starts at a row', $index + 2));
+        }
+    }
+
+    /**
+     * A code sample is cut at a line break where it holds no tag and no sentence end.
+     *
+     * @return  void
+     *
+     * @since   1.4.10
+     */
+    public function testACodeSampleIsCutAtALineBreak(): void
+    {
+        $code = '';
+
+        for ($i = 1; $i <= 1500; $i++) {
+            $code .= '$config->set(\'key' . $i . '\', \'value\');' . "\n";
+        }
+
+        $html  = '<p>Before.</p><pre><code>' . $code . '</code></pre><p>After.</p>';
+        $parts = TextChunker::split($html, 4000);
+
+        $this->assertGreaterThan(1, \count($parts), 'A code sample far over the size is cut');
+        $this->assertSame($html, TextChunker::join($parts));
+
+        foreach ($parts as $index => $part) {
+            $this->assertLessThanOrEqual(4000, \strlen($part), \sprintf('Part %d keeps to the size', $index + 1));
+        }
+
+        foreach (\array_slice($parts, 1, -1) as $index => $part) {
+            $this->assertStringStartsWith('$config', $part, \sprintf('Part %d starts at a line', $index + 2));
+        }
+    }
+
+    /**
      * Text with no markup at all is cut at the end of a sentence.
      *
      * @return  void
@@ -382,5 +442,28 @@ final class TextChunkerTest extends TestCase
         }
 
         return $html;
+    }
+
+    /**
+     * A table as the editor saves it: a line break between the tags, styles on every cell, and
+     * no sentence end in any of them.
+     *
+     * @param   integer  $rows  How many rows the table has.
+     *
+     * @return  string
+     *
+     * @since   1.4.10
+     */
+    private static function crossReferenceTable(int $rows): string
+    {
+        $cell  = '<td style="border: 1px solid rgb(0, 0, 0); text-align: center;">%s</td>';
+        $html  = "<table style=\"border-collapse: collapse;\" border=\"1\">\r\n<tbody>\r\n";
+
+        for ($i = 1; $i <= $rows; $i++) {
+            $html .= "<tr>\r\n" . \sprintf($cell, '{TAG_' . $i . '}') . "\r\n"
+                . \sprintf($cell, 'Mail template ' . $i) . "\r\n" . \sprintf($cell, 'X') . "\r\n</tr>\r\n";
+        }
+
+        return $html . "</tbody>\r\n</table>";
     }
 }
