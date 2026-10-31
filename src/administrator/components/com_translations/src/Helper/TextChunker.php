@@ -25,9 +25,11 @@ namespace Joomla\Component\Translations\Administrator\Helper;
  *
  * A cut is only ever made between a '>' and a '<', so it never lands inside a tag or inside a
  * word, and the shallowest boundary near the wanted size is preferred so a chunk tends to end
- * at a paragraph or heading rather than inside one. Where a stretch holds no boundary at all -
- * a long code sample, or plain text with no markup - the wanted size is overshot to the next
- * one, and a sentence end serves where there is no tag. The parts of a value are plain
+ * at a paragraph or heading rather than inside one. White space between the two tags does not
+ * matter, because the editor writes a line break between block elements and between table
+ * rows. A sentence end serves where there is no tag, and a line break where there is no
+ * sentence either, as in a code sample; only a stretch with none of these - one long line -
+ * makes the wanted size overshoot to the next boundary. The parts of a value are plain
  * substrings in order, so putting them back together is concatenation and reproduces the
  * source exactly.
  *
@@ -86,6 +88,15 @@ final class TextChunker
      * @since  1.4.0
      */
     private const SENTENCE_RANK = 100;
+
+    /**
+     * What a line break in text ranks as: below a sentence end, so it serves only where a stretch
+     * holds neither markup nor sentences, as a code sample does.
+     *
+     * @var    integer
+     * @since  1.4.10
+     */
+    private const LINE_RANK = 200;
 
     /**
      * The most headings an outline names, so the context stays small next to the text itself.
@@ -343,7 +354,9 @@ final class TextChunker
      * the text being translated now.
      *
      * A source edited between two runs is cut differently, so the parts of the run before it no
-     * longer line up and have to be thrown away rather than joined onto new ones.
+     * longer line up and have to be thrown away rather than joined onto new ones. Given an item's
+     * planned parts rather than its strings, the print also changes when the same text is cut in
+     * other places.
      *
      * @param   array  $strings  The item's source strings keyed by field.
      *
@@ -418,10 +431,11 @@ final class TextChunker
     /**
      * Where the text may be cut, and how deeply nested each of those places is.
      *
-     * A place between a '>' and a '<' can be cut without breaking a tag or a word. Nesting is
-     * counted as it stands before the tag that follows, so the end of a paragraph ranks above a
-     * place inside one. A sentence end is offered as well, for text that carries no markup to
-     * cut at, and ranks below every tag boundary.
+     * A place between a '>' and a '<', with nothing but white space between them, can be cut
+     * without breaking a tag or a word. Nesting is counted as it stands before the tag that
+     * follows, so the end of a paragraph ranks above a place inside one. A sentence end is
+     * offered as well, for text that carries no markup to cut at, and ranks below every tag
+     * boundary; a line break in text ranks below that again.
      *
      * @param   string  $text  The text to find boundaries in.
      *
@@ -440,10 +454,19 @@ final class TextChunker
                 // A sentence end counts only where the next character starts something new, so a
                 // decimal point or an abbreviation is not mistaken for one; a sentence that ends
                 // the text has nothing after it to cut before.
-                if (($text[$i + 1] ?? '') === ' ' || ($text[$i + 1] ?? '') === "\n") {
+                if (\in_array($text[$i + 1] ?? '', [' ', "\n", "\r", "\t"], true)) {
                     if (isset($text[$i + 2])) {
-                        $boundaries[$i + 2] = self::SENTENCE_RANK + $depth;
+                        self::offer($boundaries, $i + 2, self::SENTENCE_RANK + $depth);
                     }
+                }
+
+                continue;
+            }
+
+            // A line break between two lines of text, as in a code sample, cuts after the break.
+            if ($text[$i] === "\n") {
+                if (isset($text[$i + 1])) {
+                    self::offer($boundaries, $i + 1, self::LINE_RANK + $depth);
                 }
 
                 continue;
@@ -462,8 +485,17 @@ final class TextChunker
 
             [$name, $end, $closing, $selfClosing] = $tag;
 
-            if ($i > 0 && $text[$i - 1] === '>') {
-                $boundaries[$i] = $depth;
+            // The editor puts a line break between block elements, so white space between the
+            // tags still leaves them next to each other; the cut goes before the '<', which keeps
+            // the white space with the part it follows.
+            $before = $i - 1;
+
+            while ($before >= 0 && \in_array($text[$before], [' ', "\t", "\r", "\n"], true)) {
+                $before--;
+            }
+
+            if ($before >= 0 && $text[$before] === '>') {
+                self::offer($boundaries, $i, $depth);
             }
 
             if ($closing) {
@@ -479,6 +511,23 @@ final class TextChunker
         ksort($boundaries, SORT_NUMERIC);
 
         return $boundaries;
+    }
+
+    /**
+     * Offer a place to cut at, keeping the better rank where a place is offered twice: a line
+     * break right before a tag is a boundary of both kinds.
+     *
+     * @param   array<int, int>  $boundaries  The boundaries found so far, keyed by offset.
+     * @param   integer          $offset      Where the cut would go.
+     * @param   integer          $rank        How good a place it is; lower is better.
+     *
+     * @return  void
+     *
+     * @since   1.4.10
+     */
+    private static function offer(array &$boundaries, int $offset, int $rank): void
+    {
+        $boundaries[$offset] = min($boundaries[$offset] ?? $rank, $rank);
     }
 
     /**
