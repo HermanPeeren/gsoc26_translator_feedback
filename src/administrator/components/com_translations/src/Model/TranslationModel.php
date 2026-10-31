@@ -1391,7 +1391,11 @@ class TranslationModel extends BaseDatabaseModel
             $draft[$field] = $sourceItem[$field] ?? null;
         }
 
-        // Repoint single foreign keys (such as catid) at the related item's translation, keeping the source's when none exists yet.
+        // Repoint single foreign keys (such as catid) at the related item's translation. Where none exists yet the
+        // source's value is kept, or the field's fallback taken where the source's cannot hold in the target language:
+        // a menu item's parent lives in the source language menu, so the translation waits at the root instead.
+        $fallbacks = (array) ($properties['associatedFieldsFallback'] ?? []);
+
         foreach ((array) ($properties['associatedFields'] ?? []) as $field => $relatedType) {
             $relatedItemId = (int) ($sourceItem[$field] ?? 0);
 
@@ -1403,6 +1407,8 @@ class TranslationModel extends BaseDatabaseModel
 
             if ($translatedId !== null) {
                 $draft[$field] = $translatedId;
+            } elseif (\array_key_exists($field, $fallbacks)) {
+                $draft[$field] = $fallbacks[$field];
             }
         }
 
@@ -1515,6 +1521,11 @@ class TranslationModel extends BaseDatabaseModel
             $associations[$targetLanguage] = $draftId;
             $this->writeAssociations($associations, $context);
         }
+
+        // Translations made before this one could only point at its source, and wait for it: a menu
+        // item linking to this article, or a menu item whose parent this is. Now they can point here.
+        $this->repointEarlierLinks($contentType, (int) $sourceItem['id'], $targetLanguage);
+        $this->nestEarlierChildren($model, (int) $sourceItem['id'], $draftId, $targetLanguage, $contentType, $properties);
 
         // A category's custom fields are scoped to its own id, so a field assigned only to the source
         // category does not reach the new draft on save; copy those assignments and store their values.
@@ -1809,6 +1820,171 @@ class TranslationModel extends BaseDatabaseModel
         // Rebuild it as com_menus does: the separator is named rather than taken from
         // arg_separator.output, which a site can set to an entity, and the ids keep their brackets.
         return 'index.php?' . urldecode(http_build_query($arguments, '', '&'));
+    }
+
+    /**
+     * Repoint the links of earlier translations at an item that has just been translated.
+     *
+     * A menu item translated before the article it opens keeps pointing at the source article, as
+     * repointLinkTargets() leaves an id without a translation. Content is translated in its own time
+     * per language, so the menu item regularly comes first; once the article's translation exists,
+     * the target language's translated menu items still pointing at the source are pointed at it.
+     * A menu item keeps no versions and its link is all that changes, so the link is written directly.
+     *
+     * @param   string   $contentType     The content type just translated, e.g. 'com_content.article'.
+     * @param   integer  $sourceItemId    The id of the source item just translated.
+     * @param   string   $targetLanguage  The language it was translated into.
+     *
+     * @return  void
+     *
+     * @since   1.4.7
+     */
+    private function repointEarlierLinks(string $contentType, int $sourceItemId, string $targetLanguage): void
+    {
+        foreach (ContentTypesHelper::getContentTypes() as $linkingType) {
+            $linking     = ContentTypesHelper::getProperties($linkingType);
+            $linkTargets = (array) ($linking['linkTargets'] ?? []);
+
+            // The query parameters, per view, that can carry an id of the type just translated.
+            $parametersByView = [];
+
+            foreach ($linkTargets as $view => $parameters) {
+                $carrying = array_keys(array_intersect((array) $parameters, [$contentType]));
+
+                if ($carrying !== []) {
+                    $parametersByView[$view] = $carrying;
+                }
+            }
+
+            if ($parametersByView === []) {
+                continue;
+            }
+
+            // Only translations are repointed: an item in an association group of the target language.
+            $db      = $this->getDatabase();
+            $context = (string) ($linking['context_associations'] ?? '');
+            $query   = $db->getQuery(true)
+                ->select($db->quoteName(['item.id', 'item.link']))
+                ->from($db->quoteName((string) ($linking['table'] ?? ''), 'item'))
+                ->join(
+                    'INNER',
+                    $db->quoteName('#__associations', 'association'),
+                    $db->quoteName('association.id') . ' = ' . $db->quoteName('item.id')
+                    . ' AND ' . $db->quoteName('association.context') . ' = :context'
+                )
+                ->where($db->quoteName('item.language') . ' = :language')
+                ->bind(':context', $context, ParameterType::STRING)
+                ->bind(':language', $targetLanguage, ParameterType::STRING);
+            $db->setQuery($query);
+
+            foreach ($db->loadObjectList() as $item) {
+                $arguments = [];
+                parse_str((string) parse_url(htmlspecialchars_decode((string) $item->link), PHP_URL_QUERY), $arguments);
+
+                $view     = ($arguments['option'] ?? '') . '.' . ($arguments['view'] ?? '');
+                $pointsAt = false;
+
+                foreach ($parametersByView[$view] ?? [] as $parameter) {
+                    $ids      = array_map('intval', (array) ($arguments[$parameter] ?? []));
+                    $pointsAt = $pointsAt || \in_array($sourceItemId, $ids, true);
+                }
+
+                if (!$pointsAt) {
+                    continue;
+                }
+
+                $link = $this->repointLinkTargets((string) $item->link, $linkTargets, $targetLanguage);
+
+                if ($link === (string) $item->link) {
+                    continue;
+                }
+
+                $itemId = (int) $item->id;
+                $update = $db->getQuery(true)
+                    ->update($db->quoteName((string) ($linking['table'] ?? '')))
+                    ->set($db->quoteName('link') . ' = :link')
+                    ->where($db->quoteName('id') . ' = :id')
+                    ->bind(':link', $link, ParameterType::STRING)
+                    ->bind(':id', $itemId, ParameterType::INTEGER);
+                $db->setQuery($update)->execute();
+            }
+        }
+    }
+
+    /**
+     * Move earlier translations of an item's children under its translation, just made.
+     *
+     * A menu item translated before its parent waits at the root of its menu, the fallback its
+     * parent field takes while the parent has no translation. Once the parent is translated, the
+     * children's translations still waiting there are moved under it, with an alias that is free
+     * among their new neighbours. A translation someone has moved elsewhere by hand stays where it is,
+     * and one that cannot be moved stays at the root, as it was.
+     *
+     * @param   AdminModel            $model           The managing component's model, for its table.
+     * @param   integer               $sourceItemId    The id of the source item just translated.
+     * @param   integer               $draftId         The id of its translation.
+     * @param   string                $targetLanguage  The language it was translated into.
+     * @param   string                $contentType     The content type key, e.g. 'com_menus.item'.
+     * @param   array<string, mixed>  $properties      The content type's properties from the map.
+     *
+     * @return  void
+     *
+     * @since   1.4.7
+     */
+    private function nestEarlierChildren(
+        AdminModel $model,
+        int $sourceItemId,
+        int $draftId,
+        string $targetLanguage,
+        string $contentType,
+        array $properties
+    ): void {
+        $fallbacks = (array) ($properties['associatedFieldsFallback'] ?? []);
+        $table     = (string) ($properties['table'] ?? '');
+
+        foreach ((array) ($properties['associatedFields'] ?? []) as $field => $relatedType) {
+            // Only a field pointing at the type's own items nests them, and only one with a fallback
+            // has translations waiting at it.
+            if ($relatedType !== $contentType || !\array_key_exists($field, $fallbacks)) {
+                continue;
+            }
+
+            $db    = $this->getDatabase();
+            $query = $db->getQuery(true)
+                ->select($db->quoteName('id'))
+                ->from($db->quoteName($table))
+                ->where($db->quoteName($field) . ' = :sourceId')
+                ->bind(':sourceId', $sourceItemId, ParameterType::INTEGER);
+            $db->setQuery($query);
+
+            foreach (array_map('intval', $db->loadColumn()) as $childId) {
+                $translatedChildId = $this->translatedRelatedId($childId, $contentType, $targetLanguage);
+
+                if ($translatedChildId === null) {
+                    continue;
+                }
+
+                /** @var \Joomla\CMS\Table\Nested $node */
+                $node = $model->getTable();
+
+                if (!$node->load($translatedChildId) || (int) $node->{$field} !== (int) $fallbacks[$field]) {
+                    continue;
+                }
+
+                $scopeValues = [];
+
+                foreach ((array) ($properties['aliasScope'] ?? []) as $column) {
+                    $scopeValues[$column] = $column === $field ? $draftId : $node->{$column};
+                }
+
+                $alias = (string) $node->alias;
+
+                $node->alias    = DraftAlias::pick($alias, $targetLanguage, $this->neighbouringAliases($alias, $table, $scopeValues, $translatedChildId));
+                $node->{$field} = $draftId;
+                $node->setLocation($draftId, 'last-child');
+                $node->store();
+            }
+        }
     }
 
     /**
